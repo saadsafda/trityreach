@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-indigo: #5b4fe9;
+  --color-indigo-dark: #4237c8;
+  --color-indigo-light: #8b82f8;
+  --color-indigo-soft: #efedff;
+  --color-ink: #17152b;
+  --color-muted: #706f80;
+  --color-line: #e9e8ef;
+  --color-surface: #ffffff;
+  --color-page: #f8f8fb;
+  --color-green: #15966a;
+  --color-green-soft: #e7f8f1;
+  --color-blue: #2f78d8;
+  --color-blue-soft: #eaf3ff;
+  --color-purple: #8250d8;
+  --color-purple-soft: #f2eafd;
+  --color-red: #d84c62;
+  --color-red-soft: #fff0f2;
+
+  --shadow-panel: 0 18px 48px rgba(31, 26, 75, 0.07);
+  --shadow-card: 0 8px 30px rgba(31, 26, 75, 0.035);
+  --shadow-button: 0 8px 18px rgba(91, 79, 233, 0.21);
+
+  --animate-rotate-slow: rotate 24s linear infinite;
+  --animate-spin-fast: rotate 0.7s linear infinite;
+  --animate-glow: glow 1.5s infinite;
+
+  @keyframes rotate {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes glow {
+    50% {
+      box-shadow: 0 0 0 6px rgba(91, 79, 233, 0.12);
+    }
+  }
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    margin: 0;
+    color: var(--color-ink);
+    background: var(--color-page);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+  button {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.58;
+  }
+  a {
+    color: inherit;
+  }
+  code {
+    background: #f0eff5;
+    border-radius: 4px;
+    padding: 2px 4px;
+    color: #514e60;
+  }
+}
+
+@layer utilities {
+  .shell {
+    width: min(1180px, calc(100% - 48px));
+    margin-inline: auto;
+  }
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
