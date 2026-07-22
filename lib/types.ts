@@ -35,9 +35,12 @@ export type JobStatus = {
   updatedAt: string;
 };
 
+export type LeadSource = "web" | "maps";
+
 export type SearchPreferences = {
   query: string;
   limit: number;
+  source: LeadSource;
 };
 
 export type DashboardState = {

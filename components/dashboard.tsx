@@ -73,6 +73,7 @@ function StatCard({
 export default function Dashboard() {
   const [query, setQuery] = useState("");
   const [resultLimit, setResultLimit] = useState(5);
+  const [leadSource, setLeadSource] = useState<"web" | "maps">("web");
   const [leads, setLeads] = useState<Lead[]>([]);
   const [status, setStatus] = useState<JobStatus>(DEFAULT_STATUS);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
@@ -98,6 +99,7 @@ export default function Dashboard() {
       if (!initializedSearch.current) {
         setQuery(payload.search.query);
         setResultLimit(payload.search.limit);
+        setLeadSource(payload.search.source ?? "web");
         initializedSearch.current = true;
       }
       if (activityResponse.ok) {
@@ -157,7 +159,7 @@ export default function Dashboard() {
       const response = await fetch("/api/scrape", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: normalizedQuery, limit: resultLimit }),
+        body: JSON.stringify({ query: normalizedQuery, limit: resultLimit, source: leadSource }),
       });
       const payload = (await response.json()) as { status?: JobStatus; error?: string };
       if (!response.ok) throw new Error(payload.error || "Could not start the scraper");
@@ -286,6 +288,33 @@ export default function Dashboard() {
               </div>
               <div className="flex items-center justify-between gap-5 border-t border-[#e7e5ed] pt-4">
                 <div className="flex flex-col gap-[3px]">
+                  <strong className="text-[11px]">Source</strong>
+                  <span className="text-[10px] text-muted">Where to find leads. Google Maps also returns businesses with no website.</span>
+                </div>
+                <div className="inline-flex rounded-[9px] border border-[#d8d6e2] bg-white p-0.5" role="group" aria-label="Lead source">
+                  {([
+                    { value: "web", label: "Websites" },
+                    { value: "maps", label: "Google Maps" },
+                  ] as const).map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setLeadSource(option.value)}
+                      disabled={isActive}
+                      aria-pressed={leadSource === option.value}
+                      className={`rounded-[7px] px-3 py-1.75 text-[11px] font-bold transition-colors disabled:opacity-60 ${
+                        leadSource === option.value
+                          ? "bg-indigo text-white"
+                          : "text-[#625f70] hover:enabled:bg-indigo-soft hover:enabled:text-indigo"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="mt-4 flex items-center justify-between gap-5 border-t border-[#e7e5ed] pt-4">
+                <div className="flex flex-col gap-[3px]">
                   <strong className="text-[11px]">Lead target</strong>
                   <span className="text-[10px] text-muted">How many usable leads should be returned? Extra sources are checked when needed.</span>
                 </div>
@@ -308,7 +337,9 @@ export default function Dashboard() {
             </div>
             <div className="flex items-center justify-between gap-[18px]">
               <p className="m-0 text-[11px] leading-[1.5] text-muted">
-                TrityReach keeps checking sources until the lead target is reached, then visits each official website and its contact/about pages for public email and phone details. Results persist in <code>leads.csv</code>.
+                {leadSource === "maps"
+                  ? <>Google Maps returns each business&apos;s name, phone, and address (including those with no website), then TrityReach enriches any that do have a site for email. Results persist in <code>leads.csv</code>.</>
+                  : <>TrityReach keeps checking sources until the lead target is reached, then visits each official website and its contact/about pages for public email and phone details. Results persist in <code>leads.csv</code>.</>}
               </p>
               <button
                 type="button"
@@ -474,7 +505,10 @@ export default function Dashboard() {
                             {lead.website.replace(/^https?:\/\//, "").replace(/\/$/, "")} <span>↗</span>
                           </a>
                         ) : (
-                          <span className="text-[#b9b7c0]">—</span>
+                          <span className="inline-flex items-center gap-1 rounded-full bg-[#fef4e6] px-2 py-1 text-[9px] font-bold uppercase tracking-[0.06em] text-[#b26b0c] ring-1 ring-[#f6dcae]">
+                            <span className="size-1.5 rounded-full bg-[#e08a1e]" />
+                            No website
+                          </span>
                         )}
                       </td>
                     </tr>

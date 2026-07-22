@@ -94,15 +94,16 @@ export async function writeUrls(urls: string[]): Promise<void> {
 }
 
 export async function readSearchPreferences(): Promise<SearchPreferences> {
-  if (!(await exists(SEARCH_CONFIG_PATH))) return { query: "", limit: 5 };
+  if (!(await exists(SEARCH_CONFIG_PATH))) return { query: "", limit: 5, source: "web" };
   try {
     const value = JSON.parse(await fs.readFile(SEARCH_CONFIG_PATH, "utf8")) as Partial<SearchPreferences>;
     return {
       query: typeof value.query === "string" ? value.query : "",
       limit: Math.min(25, Math.max(1, Number(value.limit) || 5)),
+      source: value.source === "maps" ? "maps" : "web",
     };
   } catch {
-    return { query: "", limit: 5 };
+    return { query: "", limit: 5, source: "web" };
   }
 }
 

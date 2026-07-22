@@ -694,6 +694,16 @@ def parse_args() -> argparse.Namespace:
         help="discover business websites from this keyword/location query before scraping",
     )
     parser.add_argument(
+        "--source",
+        choices=("web", "maps"),
+        default="web",
+        help=(
+            "lead discovery source in query mode: 'web' scrapes official websites "
+            "(default), 'maps' pulls businesses from Google Maps (Places API) — "
+            "including ones with no website"
+        ),
+    )
+    parser.add_argument(
         "--max-results",
         type=int,
         default=5,
@@ -746,12 +756,136 @@ def require_api_key() -> str:
     return api_key
 
 
+def require_maps_api_key() -> str:
+    load_dotenv(BASE_DIR / ".env")
+    api_key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError(
+            "GOOGLE_MAPS_API_KEY is missing. Add a Google Places API key to .env "
+            "(enable the Places API and billing in Google Cloud Console) to search "
+            "Google Maps."
+        )
+    return api_key
+
+
 def is_blocked_discovery_domain(hostname: str) -> bool:
     hostname = hostname.lower().removeprefix("www.")
     return any(
         hostname == domain or hostname.endswith(f".{domain}")
         for domain in BLOCKED_DISCOVERY_DOMAINS
     )
+
+
+PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+# Field mask keeps the response small and the bill low — we only ask for the
+# fields that map onto a lead row (New Places API charges by requested fields).
+PLACES_FIELD_MASK = (
+    "places.displayName,"
+    "places.internationalPhoneNumber,"
+    "places.nationalPhoneNumber,"
+    "places.websiteUri,"
+    "places.formattedAddress,"
+    "places.addressComponents,"
+    "nextPageToken"
+)
+
+
+def _places_city(place: dict[str, Any]) -> str:
+    """Pull the city (locality) out of a place's addressComponents."""
+    for component in place.get("addressComponents", []):
+        types = component.get("types", [])
+        if "locality" in types or "postal_town" in types:
+            return component.get("longText") or component.get("shortText") or ""
+    # Fall back to the administrative area if no locality is present.
+    for component in place.get("addressComponents", []):
+        if "administrative_area_level_1" in component.get("types", []):
+            return component.get("longText") or component.get("shortText") or ""
+    return ""
+
+
+def discover_from_places(query: str, max_results: int, api_key: str) -> list[dict[str, str]]:
+    """Return leads for a query straight from the Google Places API (Maps).
+
+    Unlike the web-search discovery path, this returns businesses that have no
+    website too — the phone number and address come from the Maps listing, so a
+    store owner without a site is still reachable (via the Retell call branch).
+    Each returned dict already matches CSV_FIELDS.
+    """
+    query = " ".join(query.split())
+    if len(query) < 3:
+        raise ValueError("The search query must contain at least 3 characters.")
+    if max_results < 1 or max_results > 100:
+        raise ValueError("max-results must be between 1 and 100.")
+
+    leads: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    page_token = ""
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": PLACES_FIELD_MASK,
+    }
+
+    # The Places API returns up to 20 results per page; page through until we
+    # have enough leads or Google stops handing out a nextPageToken.
+    while len(leads) < max_results:
+        payload: dict[str, Any] = {"textQuery": query, "pageSize": 20}
+        if page_token:
+            payload["pageToken"] = page_token
+        try:
+            response = requests.post(
+                PLACES_TEXT_SEARCH_URL, json=payload, headers=headers, timeout=20
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            detail = ""
+            if getattr(exc, "response", None) is not None:
+                detail = f" (HTTP {exc.response.status_code}: {exc.response.text[:200]})"
+            raise ValueError(f"Google Places request failed{detail}") from exc
+
+        data = response.json()
+        for place in data.get("places", []):
+            name = (place.get("displayName") or {}).get("text", "").strip()
+            phone = (
+                place.get("internationalPhoneNumber")
+                or place.get("nationalPhoneNumber")
+                or ""
+            ).strip()
+            website = _normalized_web_url(place.get("websiteUri", ""))
+            address = _clean_address(place.get("formattedAddress", ""))
+            city = _places_city(place)
+            # Skip listings that carry neither a phone nor a website — nothing to
+            # act on (no way to call or email them).
+            if not name or not (phone or website):
+                continue
+            identity = (name.lower(), phone or website.lower())
+            if identity in seen:
+                continue
+            seen.add(identity)
+            leads.append(
+                {
+                    "business_name": name,
+                    "contact_name": "",
+                    "email": "",  # Maps never exposes email; enrichment fills it if a site exists
+                    "phone": phone,
+                    "website": website,
+                    "city": city,
+                    "address": address,
+                }
+            )
+            if len(leads) >= max_results:
+                break
+
+        page_token = data.get("nextPageToken", "")
+        if not page_token:
+            break
+
+    if not leads:
+        raise ValueError(
+            "Google Maps returned no usable businesses for that query. "
+            "Try a more specific business type and location."
+        )
+    return leads
 
 
 def discover_urls(query: str, max_results: int) -> list[str]:
@@ -1035,6 +1169,46 @@ official website; otherwise use the source page URL.
     )
 
 
+def _finish_run(
+    args: argparse.Namespace,
+    rows: list[dict[str, str]],
+    progress: "ProgressReporter",
+    activity: "ActivityLogger",
+    processed_sources: int,
+) -> None:
+    """Shared tail for both discovery sources: enrich → save → webhook → done."""
+    if not rows:
+        activity.log("failed", "No matching leads were extracted")
+        raise ValueError(
+            "No matching leads were extracted. Try a more specific business type and location."
+        )
+
+    # Visit each lead's own website and dig its contact/about pages so that
+    # missing emails and phone numbers are filled in from the source site.
+    # (Maps leads with no website are simply left as-is here.)
+    print(f"Enriching {len(rows)} lead(s) with contact details...", flush=True)
+    activity.log("enriching", f"Enriching {len(rows)} lead(s) with contact details")
+    rows = enrich_rows_with_contacts(rows, progress=progress, activity=activity)
+
+    write_csv(args.output, rows)
+
+    # Hand the saved leads to the n8n outreach webhook, when configured.
+    webhook_url = (args.webhook_url or os.getenv("N8N_WEBHOOK_URL", "")).strip()
+    delivery_note = ""
+    if webhook_url:
+        print(f"Delivering {len(rows)} lead(s) to the outreach webhook...", flush=True)
+        activity.log("webhook_sent", f"Sending {len(rows)} lead(s) to the n8n outreach webhook")
+        delivered = post_rows_to_webhook(webhook_url, rows)
+        delivery_note = f"; {delivered} sent to outreach"
+        activity.log("webhook_sent", f"Delivered {delivered} of {len(rows)} lead(s) to n8n")
+
+    progress.total = processed_sources or len(rows)
+    progress.completed = progress.total
+    progress.update("completed", message=f"Saved {len(rows)} lead(s){delivery_note}")
+    activity.log("completed", f"Saved {len(rows)} lead(s) to leads.csv{delivery_note}")
+    print(f"Saved {len(rows)} lead(s) to {args.output.expanduser().resolve()}{delivery_note}")
+
+
 def main() -> int:
     args = parse_args()
     progress = ProgressReporter(args.progress_file, args.job_id)
@@ -1042,6 +1216,42 @@ def main() -> int:
     try:
         query = " ".join((args.query or "").split())
         progress.query = query
+
+        # Google Maps (Places API) discovery is a self-contained branch: it
+        # returns finished lead rows (business/phone/website/address), including
+        # businesses with no website, then joins the shared enrich → save →
+        # webhook path below. It does not use the LLM website scraper at all.
+        if query and args.source == "maps":
+            maps_key = require_maps_api_key()
+            progress.update("discovering", message=f"Searching Google Maps for {query}")
+            activity.log("discovering", f"Searching Google Maps for “{query}”")
+            print(f"Searching Google Maps for: {query}", flush=True)
+            rows = discover_from_places(query, args.max_results, maps_key)
+            for row in rows:
+                # Enrichment reads _source_url; point it at the site when there is
+                # one so we still pull email/extra phone, and log the find.
+                row["_source_url"] = row.get("website", "")
+                activity.log("lead_found", f"Found lead: {row.get('business_name') or 'a business'}")
+            no_site = sum(1 for r in rows if not r.get("website"))
+            progress.discovered_urls = [r.get("website") or r.get("business_name", "") for r in rows]
+            activity.log(
+                "discovering",
+                f"Found {len(rows)} business(es) on Google Maps",
+                detail=f"{no_site} have no website (call/SMS targets)" if no_site else "all have a website",
+            )
+            print(
+                f"Found {len(rows)} business(es) on Google Maps "
+                f"({no_site} without a website).",
+                flush=True,
+            )
+            progress.total = len(rows)
+            processed_sources = len(rows)
+            # Enrichment is HTML/regex only (no LLM), so no OpenAI key is needed
+            # for the Maps path.
+            rows = deduplicate_leads(rows)[: args.max_results]
+            _finish_run(args, rows, progress, activity, processed_sources)
+            return 0
+
         api_key = require_api_key()
         if query:
             progress.update(
@@ -1126,35 +1336,7 @@ def main() -> int:
         rows = deduplicate_leads(rows)
         if query:
             rows = rows[: args.max_results]
-        if not rows:
-            activity.log("failed", "No matching leads were extracted")
-            raise ValueError(
-                "No matching leads were extracted. Try a more specific business type and location."
-            )
-
-        # Visit each lead's own website and dig its contact/about pages so that
-        # missing emails and phone numbers are filled in from the source site.
-        print(f"Enriching {len(rows)} lead(s) with contact details...", flush=True)
-        activity.log("enriching", f"Enriching {len(rows)} lead(s) with contact details")
-        rows = enrich_rows_with_contacts(rows, progress=progress, activity=activity)
-
-        write_csv(args.output, rows)
-
-        # Hand the saved leads to the n8n outreach webhook, when configured.
-        webhook_url = (args.webhook_url or os.getenv("N8N_WEBHOOK_URL", "")).strip()
-        delivery_note = ""
-        if webhook_url:
-            print(f"Delivering {len(rows)} lead(s) to the outreach webhook...", flush=True)
-            activity.log("webhook_sent", f"Sending {len(rows)} lead(s) to the n8n outreach webhook")
-            delivered = post_rows_to_webhook(webhook_url, rows)
-            delivery_note = f"; {delivered} sent to outreach"
-            activity.log("webhook_sent", f"Delivered {delivered} of {len(rows)} lead(s) to n8n")
-
-        progress.total = processed_sources or len(urls)
-        progress.completed = progress.total
-        progress.update("completed", message=f"Saved {len(rows)} lead(s){delivery_note}")
-        activity.log("completed", f"Saved {len(rows)} lead(s) to leads.csv{delivery_note}")
-        print(f"Saved {len(rows)} lead(s) to {args.output.expanduser().resolve()}{delivery_note}")
+        _finish_run(args, rows, progress, activity, processed_sources or len(urls))
         return 0
     except KeyboardInterrupt:
         progress.update("failed", message="Scrape cancelled", error="Scrape cancelled")

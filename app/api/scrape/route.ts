@@ -18,7 +18,7 @@ import type { JobStatus } from "@/lib/types";
 
 export const runtime = "nodejs";
 
-function normalizeSearch(queryValue: unknown, limitValue: unknown) {
+function normalizeSearch(queryValue: unknown, limitValue: unknown, sourceValue: unknown) {
   if (typeof queryValue !== "string") throw new Error("Enter a lead search query.");
   const query = queryValue.trim().replace(/\s+/g, " ");
   if (query.length < 3) throw new Error("The search query must contain at least 3 characters.");
@@ -27,7 +27,8 @@ function normalizeSearch(queryValue: unknown, limitValue: unknown) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 25) {
     throw new Error("The result limit must be between 1 and 25.");
   }
-  return { query, limit };
+  const source: "web" | "maps" = sourceValue === "maps" ? "maps" : "web";
+  return { query, limit, source };
 }
 
 async function waitForSpawn(child: ReturnType<typeof spawn>): Promise<void> {
@@ -42,8 +43,8 @@ export async function POST(request: Request) {
   let logDescriptor: number | undefined;
 
   try {
-    const body = (await request.json()) as { query?: unknown; limit?: unknown };
-    const search = normalizeSearch(body.query, body.limit);
+    const body = (await request.json()) as { query?: unknown; limit?: unknown; source?: unknown };
+    const search = normalizeSearch(body.query, body.limit, body.source);
     const existing = await readStatus();
     if (
       (existing.status === "queued" ||
@@ -87,6 +88,8 @@ export async function POST(request: Request) {
         path.join(ROOT_DIR, "scrape_leads.py"),
         "--query",
         search.query,
+        "--source",
+        search.source,
         "--max-results",
         String(search.limit),
         "--discovered-output",
