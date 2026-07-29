@@ -240,15 +240,86 @@ def _addresses_from_jsonld(soup: BeautifulSoup) -> list[str]:
     return addresses
 
 
+# Capitalised two-word phrases that are common on sites but are not people.
+NON_NAME_PHRASES = frozenset(
+    {
+        "contact us", "about us", "sale now", "shop now", "buy now", "read more",
+        "learn more", "our team", "our story", "get started", "sign up", "log in",
+        "home page", "privacy policy", "terms conditions", "customer service",
+        "opening hours", "free shipping", "gift cards", "new arrivals",
+    }
+)
+
+
+def _clean_person_name(value: Any) -> str:
+    """Accept a value only if it looks like a real person's name."""
+    if isinstance(value, dict):
+        value = value.get("name") or ""
+    name = " ".join(str(value or "").split()).strip()
+    # Two-to-four words, each starting with a capital, letters/hyphens/
+    # apostrophes/periods only. Rejects single words, digits, and symbols.
+    if not re.fullmatch(r"[A-Z][A-Za-z.'\-]+(?: [A-Z][A-Za-z.'\-]+){1,3}", name):
+        return ""
+    # Reject all-caps slogans (real names are not usually fully upper-cased) and
+    # common non-name UI phrases.
+    if name.isupper():
+        return ""
+    if name.lower() in NON_NAME_PHRASES:
+        return ""
+    return name
+
+
+# schema.org keys that carry a person tied to the organisation.
+PERSON_JSONLD_KEYS = ("founder", "employee", "author", "owner", "member")
+
+
+def _names_from_jsonld(soup: BeautifulSoup) -> list[str]:
+    """Read likely owner/contact person names from schema.org JSON-LD blocks."""
+    names: list[str] = []
+
+    def _add(value: Any) -> None:
+        cleaned = _clean_person_name(value)
+        if cleaned and cleaned not in names:
+            names.append(cleaned)
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            node_type = str(node.get("@type", "")).lower()
+            if node_type == "person" and node.get("name"):
+                _add(node.get("name"))
+            for person_key in PERSON_JSONLD_KEYS:
+                if person_key in node:
+                    target = node[person_key]
+                    for item in target if isinstance(target, list) else [target]:
+                        _add(item)
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    for script in soup.find_all("script", type="application/ld+json"):
+        raw = script.string or script.get_text()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        _walk(data)
+    return names
+
+
 def _extract_contacts_from_html(
     html: str,
-) -> tuple[list[str], list[str], list[str]]:
-    """Pull emails, phone numbers, and postal addresses out of a page's HTML."""
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Pull emails, phones, addresses, and person names out of a page's HTML."""
     soup = BeautifulSoup(html, "html.parser")
 
     emails: list[str] = []
     phones: list[str] = []
     addresses: list[str] = []
+    names: list[str] = []
 
     def _add_email(value: str) -> None:
         value = value.strip().strip(".,;:")
@@ -304,7 +375,24 @@ def _extract_contacts_from_html(
     for tag in soup.find_all(attrs={"itemprop": "address"}):
         _add_address(tag.get_text(" ", strip=True))
 
-    return emails, phones, addresses
+    # Names: only from structured, high-precision sources — schema.org Person
+    # data and itemprop="name" inside a Person scope — to avoid picking random
+    # capitalised words out of body copy.
+    for name in _names_from_jsonld(soup):
+        if name not in names:
+            names.append(name)
+    for tag in soup.find_all(attrs={"itemprop": "name"}):
+        parent_type = " ".join(
+            str(tag.find_parent(attrs={"itemtype": True}).get("itemtype", ""))
+            if tag.find_parent(attrs={"itemtype": True})
+            else ""
+        ).lower()
+        if "person" in parent_type:
+            cleaned = _clean_person_name(tag.get_text(" ", strip=True))
+            if cleaned and cleaned not in names:
+                names.append(cleaned)
+
+    return emails, phones, addresses, names
 
 
 def _find_contact_links(html: str, base_url: str) -> list[str]:
@@ -449,17 +537,18 @@ def _choose_email(emails: list[str], official_url: str) -> str:
 
 def scrape_lead_contacts(
     row: dict[str, str], *, browser: Any = None
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, str]:
     """Inspect a lead's source page, official site, and contact/about pages.
 
-    Returns ``(email, phone, address, official_url)``. When ``browser`` is
-    supplied, pages are rendered so JavaScript-only contact data can be read.
+    Returns ``(email, phone, address, official_url, contact_name)``. When
+    ``browser`` is supplied, pages are rendered so JavaScript-only contact data
+    can be read. ``contact_name`` is only filled from structured Person markup.
     """
     website = _normalized_web_url(row.get("website", ""))
     source_url = _normalized_web_url(row.get("_source_url", ""))
     seeds = [url for url in (source_url, website) if url]
     if not seeds:
-        return "", "", "", ""
+        return "", "", "", "", ""
 
     session = requests.Session()
     session.headers.update({"User-Agent": CONTACT_USER_AGENT})
@@ -469,11 +558,12 @@ def scrape_lead_contacts(
     emails: list[str] = []
     phones: list[str] = []
     addresses: list[str] = []
+    names: list[str] = []
     official_url = website if website and not _is_directory_url(website) else ""
     business_name = row.get("business_name", "")
 
-    def merge(found: tuple[list[str], list[str], list[str]]) -> None:
-        found_emails, found_phones, found_addresses = found
+    def merge(found: tuple[list[str], list[str], list[str], list[str]]) -> None:
+        found_emails, found_phones, found_addresses, found_names = found
         for email in found_emails:
             if email.lower() not in {item.lower() for item in emails}:
                 emails.append(email)
@@ -483,6 +573,9 @@ def scrape_lead_contacts(
         for address in found_addresses:
             if address.lower() not in {item.lower() for item in addresses}:
                 addresses.append(address)
+        for name in found_names:
+            if name.lower() not in {item.lower() for item in names}:
+                names.append(name)
 
     while queue and len(visited) < CONTACT_MAX_TOTAL_PAGES:
         current = queue.pop(0)
@@ -537,12 +630,13 @@ def scrape_lead_contacts(
         phones[0] if phones else "",
         addresses[0] if addresses else "",
         official_url,
+        names[0] if names else "",
     )
 
 
 def scrape_website_contacts(website: str) -> tuple[str, str, str]:
     """Backward-compatible helper for scraping one website deeply."""
-    email, phone, address, _ = scrape_lead_contacts({"website": website})
+    email, phone, address, _, _ = scrape_lead_contacts({"website": website})
     return email, phone, address
 
 
@@ -557,15 +651,17 @@ def enrich_rows_with_contacts(
     browser = None
 
     def apply_details(
-        row: dict[str, str], details: tuple[str, str, str, str]
+        row: dict[str, str], details: tuple[str, str, str, str, str]
     ) -> None:
-        email, phone, address, official_url = details
+        email, phone, address, official_url, contact_name = details
         if email and not row.get("email", "").strip():
             row["email"] = email
         if phone and not row.get("phone", "").strip():
             row["phone"] = phone
         if address and not row.get("address", "").strip():
             row["address"] = address
+        if contact_name and not row.get("contact_name", "").strip():
+            row["contact_name"] = contact_name
         if official_url and (
             not row.get("website", "").strip()
             or _is_directory_url(row.get("website", ""))
@@ -603,7 +699,7 @@ def enrich_rows_with_contacts(
 
             found = [
                 label
-                for label in ("email", "phone", "address")
+                for label in ("contact_name", "email", "phone", "address")
                 if row.get(label, "").strip()
             ]
             if activity is not None:
