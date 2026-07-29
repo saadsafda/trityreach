@@ -4,21 +4,46 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import AddLeadModal from "@/components/add-lead-modal";
 import ChannelStatus from "@/components/channel-status";
 import ConversationThread from "@/components/conversation-thread";
-import { ChevronRightIcon, DownloadIcon, EmailIcon, PhoneIcon, PlusIcon, SearchIcon } from "@/components/icons";
+import {
+  ChevronRightIcon,
+  DownloadIcon,
+  EmailIcon,
+  GlobeIcon,
+  MapPinIcon,
+  PhoneIcon,
+  PlusIcon,
+  SearchIcon,
+} from "@/components/icons";
 import TopNav from "@/components/top-nav";
 import { leadKeyForClient } from "@/lib/lead-key";
-import type { ConversationEntry, DashboardState, Lead, LeadField } from "@/lib/types";
+import type { ConversationEntry, DashboardState, Lead } from "@/lib/types";
 
 type SendState = "sending" | "sent" | "error";
 type OutreachChannel = "call" | "email";
 type LeadSendState = { channel: OutreachChannel; state: SendState };
 
-const COLUMNS: { key: LeadField; label: string }[] = [
-  { key: "business_name", label: "Business" },
-  { key: "contact_name", label: "Contact" },
-  { key: "city", label: "City" },
-  { key: "address", label: "Address" },
-];
+type LeadStatus = "new" | "contacted" | "interested";
+
+const STATUS_META: Record<LeadStatus, { label: string; className: string }> = {
+  new: { label: "New", className: "bg-indigo-soft text-indigo" },
+  contacted: { label: "Contacted", className: "bg-[#f1f0f5] text-[#696777]" },
+  interested: { label: "Interested", className: "bg-green-soft text-green" },
+};
+
+/** Derived from real conversation history — no stored status field exists. */
+function deriveLeadStatus(entries: ConversationEntry[]): LeadStatus {
+  if (entries.some((entry) => entry.direction === "inbound")) return "interested";
+  if (entries.length > 0) return "contacted";
+  return "new";
+}
+
+/** Heuristic from existing lead data — TrityReach doesn't persist a source tag per lead.
+ * Google Maps is the only source that returns businesses with no website. */
+function deriveLeadSource(lead: Lead): { label: string; icon: React.ReactNode } {
+  return lead.website
+    ? { label: "Web Lead", icon: <GlobeIcon /> }
+    : { label: "Google Maps", icon: <MapPinIcon /> };
+}
 
 export default function LeadsView() {
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -152,11 +177,59 @@ export default function LeadsView() {
     return "Retry";
   }
 
+  function OutreachButtons({ lead, leadKey }: { lead: Lead; leadKey: string }) {
+    return (
+      <>
+        {(
+          [
+            { channel: "call" as const, icon: <PhoneIcon />, idle: "Call", enabled: Boolean(lead.phone), missing: "Needs a phone number" },
+            { channel: "email" as const, icon: <EmailIcon />, idle: "Email", enabled: Boolean(lead.email), missing: "Needs an email address" },
+          ]
+        ).map(({ channel, icon, idle, enabled, missing }) => {
+          const current = sendStates[leadKey];
+          const isThis = current?.channel === channel;
+          return (
+            <button
+              key={channel}
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                void sendToOutreach(leadKey, channel);
+              }}
+              disabled={!enabled || current?.state === "sending"}
+              title={
+                enabled
+                  ? channel === "call"
+                    ? "Place a real AI phone call to this lead"
+                    : "Send a real AI-drafted email to this lead"
+                  : missing
+              }
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition-colors ${
+                isThis && current.state === "sent"
+                  ? "border-green/30 bg-green-soft text-green"
+                  : isThis && current.state === "error"
+                    ? "border-red/30 bg-red-soft text-red"
+                    : "border-[#dcdbe5] bg-white text-[#3f3d4d] hover:enabled:border-indigo hover:enabled:text-indigo"
+              }`}
+            >
+              {isThis && current.state === "sending" ? (
+                <span className="size-3 animate-spin-fast rounded-full border-2 border-indigo/25 border-t-indigo" />
+              ) : (
+                icon
+              )}
+              {channelButtonLabel(leadKey, channel, idle)}
+            </button>
+          );
+        })}
+      </>
+    );
+  }
+
   return (
-    <main className="min-h-screen">
+    <main className="min-h-screen pb-16 md:pb-0">
       <TopNav isActive={false} />
 
-      <div className="shell py-[70px] pb-8">
+      <div className="shell py-8 md:py-[70px] md:pb-8">
         <section className="mb-6 max-w-[640px] px-2">
           <div className="mb-4 flex items-center gap-2 text-[12px] font-extrabold uppercase tracking-[0.14em] text-indigo">
             CRM &amp; conversations
@@ -207,7 +280,7 @@ export default function LeadsView() {
                   </button>
                 ))}
               </div>
-              <label className="flex h-[43px] w-[220px] items-center gap-2 rounded-[11px] border border-[#dcdbe5] px-3 text-[#9996a5] focus-within:border-indigo focus-within:shadow-[0_0_0_3px_rgba(91,79,233,0.08)]">
+              <label className="flex h-[43px] w-full items-center gap-2 rounded-[11px] border border-[#dcdbe5] px-3 text-[#9996a5] focus-within:border-indigo focus-within:shadow-[0_0_0_3px_rgba(91,79,233,0.08)] sm:w-[220px]">
                 <SearchIcon />
                 <input
                   value={search}
@@ -240,123 +313,68 @@ export default function LeadsView() {
             </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px] border-collapse">
-              <thead>
-                <tr>
-                  {COLUMNS.map((column) => (
-                    <th
-                      key={column.key}
-                      scope="col"
-                      className="border-b border-line bg-[#fafafd] px-[17px] py-3.5 text-left text-[9px] font-extrabold uppercase tracking-[0.095em] text-[#777483]"
-                    >
-                      {column.label}
-                    </th>
-                  ))}
-                  <th className="border-b border-line bg-[#fafafd] px-[17px] py-3.5 text-left text-[9px] font-extrabold uppercase tracking-[0.095em] text-[#777483]">
-                    Channel status
-                  </th>
-                  <th className="border-b border-line bg-[#fafafd] px-[17px] py-3.5 text-right text-[9px] font-extrabold uppercase tracking-[0.095em] text-[#777483]">
-                    Outreach
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleLeads.map((lead, index) => {
-                  const leadKey = leadKeyForClient(lead);
-                  const entries = conversationsByLead.get(leadKey) ?? [];
-                  return (
-                    <tr
-                      key={`${lead.website}-${lead.email}-${index}`}
-                      onClick={() => setSelectedLeadKey(leadKey)}
-                      className="cursor-pointer hover:bg-[#fbfaff]"
-                    >
-                      <td className="max-w-[230px] border-b border-[#f0eff4] p-[17px] text-[12px] text-[#565363]">
-                        <div className="flex items-center gap-2.5">
-                          <span className="grid size-[31px] flex-none place-items-center rounded-[9px] bg-indigo-soft text-[11px] font-extrabold text-indigo">
-                            {(lead.business_name || "?").charAt(0).toUpperCase()}
-                          </span>
-                          <strong className="truncate text-[12px] text-ink">{lead.business_name || "Not found"}</strong>
-                        </div>
-                      </td>
-                      <td className="max-w-[200px] truncate border-b border-[#f0eff4] p-[17px] text-[12px] text-[#565363]">
-                        {lead.contact_name || <span className="text-[#b9b7c0]">—</span>}
-                      </td>
-                      <td className="max-w-[160px] truncate border-b border-[#f0eff4] p-[17px] text-[12px] text-[#565363]">
-                        {lead.city || <span className="text-[#b9b7c0]">—</span>}
-                      </td>
-                      <td className="max-w-[220px] truncate border-b border-[#f0eff4] p-[17px] text-[12px] text-[#565363]">
-                        {lead.address || <span className="text-[#b9b7c0]">—</span>}
-                      </td>
-                      <td className="border-b border-[#f0eff4] p-[17px]">
-                        <ChannelStatus entries={entries} />
-                      </td>
-                      <td className="border-b border-[#f0eff4] p-[17px]">
-                        <div className="flex items-center justify-end gap-2 text-muted">
-                          {(
-                            [
-                              { channel: "call" as const, icon: <PhoneIcon />, idle: "Call", enabled: Boolean(lead.phone), missing: "Needs a phone number" },
-                              { channel: "email" as const, icon: <EmailIcon />, idle: "Email", enabled: Boolean(lead.email), missing: "Needs an email address" },
-                            ]
-                          ).map(({ channel, icon, idle, enabled, missing }) => {
-                            const current = sendStates[leadKey];
-                            const isThis = current?.channel === channel;
-                            return (
-                              <button
-                                key={channel}
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void sendToOutreach(leadKey, channel);
-                                }}
-                                disabled={!enabled || current?.state === "sending"}
-                                title={
-                                  enabled
-                                    ? channel === "call"
-                                      ? "Place a real AI phone call to this lead"
-                                      : "Send a real AI-drafted email to this lead"
-                                    : missing
-                                }
-                                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition-colors ${
-                                  isThis && current.state === "sent"
-                                    ? "border-green/30 bg-green-soft text-green"
-                                    : isThis && current.state === "error"
-                                      ? "border-red/30 bg-red-soft text-red"
-                                      : "border-[#dcdbe5] bg-white text-[#3f3d4d] hover:enabled:border-indigo hover:enabled:text-indigo"
-                                }`}
-                              >
-                                {isThis && current.state === "sending" ? (
-                                  <span className="size-3 animate-spin-fast rounded-full border-2 border-indigo/25 border-t-indigo" />
-                                ) : (
-                                  icon
-                                )}
-                                {channelButtonLabel(leadKey, channel, idle)}
-                              </button>
-                            );
-                          })}
-                          <ChevronRightIcon />
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            {!loading && !visibleLeads.length && (
-              <div className="flex min-h-[280px] flex-col items-center justify-center p-9 text-center">
-                <h3 className="m-0 mb-1.5 text-[15px]">{leads.length ? "No leads match this filter" : "No leads yet"}</h3>
-                <p className="m-0 text-[12px] text-muted">
-                  {leads.length ? "Try a different search or channel filter." : "Run a scrape from the Workflow page to get started."}
-                </p>
-              </div>
-            )}
-            {loading && (
-              <div className="flex min-h-[280px] flex-col items-center justify-center p-9 text-center">
-                <span className="mb-3.5 size-4 animate-spin-fast rounded-full border-2 border-indigo/15 border-t-indigo" />
-                <h3 className="m-0 mb-1.5 text-[15px]">Loading your workspace</h3>
-              </div>
-            )}
+          <div className="flex flex-col gap-3 p-4">
+            {visibleLeads.map((lead, index) => {
+              const leadKey = leadKeyForClient(lead);
+              const entries = conversationsByLead.get(leadKey) ?? [];
+              const status = STATUS_META[deriveLeadStatus(entries)];
+              const source = deriveLeadSource(lead);
+              return (
+                <div
+                  key={`${lead.website}-${lead.email}-${index}`}
+                  onClick={() => setSelectedLeadKey(leadKey)}
+                  className="flex cursor-pointer flex-col gap-3 rounded-2xl border border-[#f0eff4] bg-[#fbfbfd] p-4 transition-colors hover:border-[#dedaf9] lg:flex-row lg:items-center lg:justify-between lg:gap-4"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="grid size-10 flex-none place-items-center rounded-full bg-indigo-soft text-[13px] font-extrabold text-indigo">
+                      {(lead.business_name || "?").charAt(0).toUpperCase()}
+                    </span>
+                    <div className="min-w-0">
+                      <strong className="block truncate text-[13px] text-ink">{lead.business_name || "Not found"}</strong>
+                      <span className="block truncate text-[11px] text-muted">
+                        {lead.contact_name || "No contact name"}
+                        {lead.city ? ` · ${lead.city}` : ""}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-[#f1f0f5] px-2.5 py-1 text-[10px] font-bold text-[#696777]">
+                      {source.icon}
+                      {source.label}
+                    </span>
+                    <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${status.className}`}>
+                      {status.label}
+                    </span>
+                    <ChannelStatus entries={entries} />
+                  </div>
+
+                  <div
+                    className="flex flex-none items-center gap-2 text-muted"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <OutreachButtons lead={lead} leadKey={leadKey} />
+                    <ChevronRightIcon />
+                  </div>
+                </div>
+              );
+            })}
           </div>
+
+          {!loading && !visibleLeads.length && (
+            <div className="flex min-h-[280px] flex-col items-center justify-center p-9 text-center">
+              <h3 className="m-0 mb-1.5 text-[15px]">{leads.length ? "No leads match this filter" : "No leads yet"}</h3>
+              <p className="m-0 text-[12px] text-muted">
+                {leads.length ? "Try a different search or channel filter." : "Run a scrape from the Workflow page to get started."}
+              </p>
+            </div>
+          )}
+          {loading && (
+            <div className="flex min-h-[280px] flex-col items-center justify-center p-9 text-center">
+              <span className="mb-3.5 size-4 animate-spin-fast rounded-full border-2 border-indigo/15 border-t-indigo" />
+              <h3 className="m-0 mb-1.5 text-[15px]">Loading your workspace</h3>
+            </div>
+          )}
         </section>
 
         <div className="flex items-center justify-center pt-4">
@@ -369,7 +387,7 @@ export default function LeadsView() {
           </button>
         </div>
 
-        <footer className="flex items-center justify-between px-[3px] pb-0.5 pt-6 text-[10px] text-[#9b99a5]">
+        <footer className="flex flex-col items-start gap-1.5 px-[3px] pb-0.5 pt-6 text-[10px] text-[#9b99a5] sm:flex-row sm:items-center sm:justify-between sm:gap-0">
           <span className="font-extrabold uppercase tracking-[0.11em] text-[#706d80]">AI Trity Reach</span>
           <p className="m-0">Local-first lead intelligence · Your data stays in this workspace</p>
         </footer>

@@ -139,17 +139,17 @@ export default function ConversationThread({
         </div>
 
         {onSend && (
-          <div className="flex items-center justify-between gap-3 border-t border-line bg-[#fbfbfd] px-6 py-4">
+          <div className="flex flex-col gap-3 border-t border-line bg-[#fbfbfd] px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
             <p className="m-0 text-[11px] leading-[1.5] text-muted">
               Pick a channel — the AI drafts the message or script, then it is really sent.
             </p>
-            <div className="flex flex-none items-center gap-2">
+            <div className="flex flex-col gap-2 sm:flex-none sm:flex-row sm:items-center">
               <button
                 type="button"
                 onClick={() => onSend("call")}
                 disabled={!lead.phone || sendState?.state === "sending"}
                 title={lead.phone ? "Place a real AI phone call" : "Needs a phone number"}
-                className={`inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-[11px] border px-4 text-[12px] font-bold transition-transform ${
+                className={`inline-flex h-10 w-full items-center justify-center gap-2 whitespace-nowrap rounded-[11px] border px-4 text-[12px] font-bold transition-transform sm:w-auto ${
                   sendState?.channel === "call" && sendState.state === "sent"
                     ? "border-green/30 bg-green-soft text-green"
                     : "border-indigo bg-indigo text-white shadow-button hover:enabled:-translate-y-px hover:enabled:bg-indigo-dark"
@@ -171,7 +171,7 @@ export default function ConversationThread({
                 onClick={() => onSend("email")}
                 disabled={!lead.email || sendState?.state === "sending"}
                 title={lead.email ? "Send a real AI-drafted email" : "Needs an email address"}
-                className={`inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-[11px] border px-4 text-[12px] font-bold transition-colors ${
+                className={`inline-flex h-10 w-full items-center justify-center gap-2 whitespace-nowrap rounded-[11px] border px-4 text-[12px] font-bold transition-colors sm:w-auto ${
                   sendState?.channel === "email" && sendState.state === "sent"
                     ? "border-green/30 bg-green-soft text-green"
                     : "border-[#dcdbe5] bg-white text-[#3f3d4d] hover:enabled:border-indigo hover:enabled:text-indigo"

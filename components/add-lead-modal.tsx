@@ -108,7 +108,7 @@ export default function AddLeadModal({
         </div>
 
         <form onSubmit={submit}>
-          <div className="grid grid-cols-2 gap-3.5 px-6 py-5">
+          <div className="grid grid-cols-1 gap-3.5 px-6 py-5 sm:grid-cols-2">
             {FIELDS.map((field, index) => (
               <label key={field.key} className={`flex flex-col gap-1.5 ${field.span2 ? "col-span-2" : ""}`}>
                 <span className="text-[11px] font-bold text-[#464353]">
@@ -133,7 +133,7 @@ export default function AddLeadModal({
             </p>
           )}
 
-          <div className="flex items-center justify-between gap-3 border-t border-line bg-[#fbfbfd] px-6 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-[#fbfbfd] px-6 py-4">
             <p className="m-0 text-[11px] text-muted">Needs at least an email or a phone number.</p>
             <div className="flex items-center gap-2">
               <button
