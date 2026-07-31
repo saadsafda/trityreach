@@ -14,7 +14,7 @@ import {
   PlusIcon,
   SearchIcon,
 } from "@/components/icons";
-import TopNav from "@/components/top-nav";
+import AppShell from "@/components/app-shell";
 import { leadKeyForClient } from "@/lib/lead-key";
 import type { ConversationEntry, DashboardState, Lead } from "@/lib/types";
 
@@ -226,10 +226,8 @@ export default function LeadsView() {
   }
 
   return (
-    <main className="min-h-screen pb-16 md:pb-0">
-      <TopNav isActive={false} />
-
-      <div className="shell py-8 md:py-[70px] md:pb-8">
+    <AppShell isActive={false}>
+      <div className="mx-auto w-full max-w-[1240px] px-5 py-10 md:px-9 md:py-14">
         <section className="mb-6 max-w-[640px] px-2">
           <div className="mb-4 flex items-center gap-2 text-[12px] font-extrabold uppercase tracking-[0.14em] text-indigo">
             CRM &amp; conversations
@@ -258,7 +256,7 @@ export default function LeadsView() {
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2.5">
-              <div className="flex items-center gap-1 rounded-[11px] border border-[#dcdbe5] bg-white p-1">
+              <div className="flex items-center gap-1 rounded-[11px] border border-[#dcdbe5] bg-white p-1" data-tour="filters">
                 {(
                   [
                     { key: "all", label: "All" },
@@ -280,7 +278,10 @@ export default function LeadsView() {
                   </button>
                 ))}
               </div>
-              <label className="flex h-[43px] w-full items-center gap-2 rounded-[11px] border border-[#dcdbe5] px-3 text-[#9996a5] focus-within:border-indigo focus-within:shadow-[0_0_0_3px_rgba(91,79,233,0.08)] sm:w-[220px]">
+              <label
+                className="flex h-[43px] w-full items-center gap-2 rounded-[11px] border border-[#dcdbe5] px-3 text-[#9996a5] focus-within:border-indigo focus-within:shadow-[0_0_0_3px_rgba(91,79,233,0.08)] sm:w-[220px]"
+                data-tour="crm-search"
+              >
                 <SearchIcon />
                 <input
                   value={search}
@@ -293,6 +294,7 @@ export default function LeadsView() {
               <button
                 type="button"
                 onClick={() => setShowAddLead(true)}
+                data-tour="add-lead"
                 className="inline-flex h-[43px] items-center justify-center gap-2 whitespace-nowrap rounded-[11px] border border-[#dcdbe5] bg-white px-4 text-[12px] font-bold text-[#3f3d4d] hover:border-indigo hover:text-indigo"
               >
                 <PlusIcon /> Add lead
@@ -300,6 +302,7 @@ export default function LeadsView() {
               <button
                 type="button"
                 onClick={() => void callAllLeads()}
+                data-tour="call-all"
                 disabled={sendingAll || !leads.some((lead) => lead.phone)}
                 className="inline-flex h-[43px] items-center justify-center gap-2 whitespace-nowrap rounded-[11px] border border-indigo bg-indigo px-4 text-[12px] font-bold text-white shadow-button transition-transform hover:enabled:-translate-y-px hover:enabled:bg-indigo-dark"
               >
@@ -323,6 +326,7 @@ export default function LeadsView() {
                 <div
                   key={`${lead.website}-${lead.email}-${index}`}
                   onClick={() => setSelectedLeadKey(leadKey)}
+                  data-tour={index === 0 ? "lead-row" : undefined}
                   className="flex cursor-pointer flex-col gap-3 rounded-2xl border border-[#f0eff4] bg-[#fbfbfd] p-4 transition-colors hover:border-[#dedaf9] lg:flex-row lg:items-center lg:justify-between lg:gap-4"
                 >
                   <div className="flex min-w-0 items-center gap-3">
@@ -351,6 +355,7 @@ export default function LeadsView() {
 
                   <div
                     className="flex flex-none items-center gap-2 text-muted"
+                    data-tour={index === 0 ? "lead-actions" : undefined}
                     onClick={(event) => event.stopPropagation()}
                   >
                     <OutreachButtons lead={lead} leadKey={leadKey} />
@@ -386,11 +391,6 @@ export default function LeadsView() {
             <DownloadIcon /> Refresh
           </button>
         </div>
-
-        <footer className="flex flex-col items-start gap-1.5 px-[3px] pb-0.5 pt-6 text-[10px] text-[#9b99a5] sm:flex-row sm:items-center sm:justify-between sm:gap-0">
-          <span className="font-extrabold uppercase tracking-[0.11em] text-[#706d80]">AI Trity Reach</span>
-          <p className="m-0">Local-first lead intelligence · Your data stays in this workspace</p>
-        </footer>
       </div>
 
       {selectedLead && selectedLeadKey && (
@@ -404,6 +404,6 @@ export default function LeadsView() {
       )}
 
       {showAddLead && <AddLeadModal onClose={() => setShowAddLead(false)} onAdded={() => void fetchData()} />}
-    </main>
+    </AppShell>
   );
 }
