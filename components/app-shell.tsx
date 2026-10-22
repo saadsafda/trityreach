@@ -2,12 +2,19 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CompassIcon, UsersIcon } from "@/components/icons";
+import { CompassIcon, MapPinIcon, PlugIcon, UsersIcon } from "@/components/icons";
 import TourGuide from "@/components/tour-guide";
+
+async function logOut() {
+  await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+  window.location.assign("/login");
+}
 
 const NAV_LINKS = [
   { href: "/", label: "Discovery", icon: CompassIcon, tour: "nav-workflow" },
   { href: "/leads", label: "CRM", icon: UsersIcon, tour: "nav-crm" },
+  { href: "/map", label: "Map", icon: MapPinIcon, tour: "nav-map" },
+  { href: "/integrations", label: "Integrations", icon: PlugIcon, tour: "nav-integrations" },
 ] as const;
 
 function NavItems({ variant }: { variant: "sidebar" | "mobile" }) {
@@ -103,10 +110,17 @@ export default function AppShell({ isActive, children }: { isActive: boolean; ch
             <strong className="text-[16px] tracking-[-0.02em] text-indigo">AI Trity</strong>
           </Link>
 
-          {/* The mockup's bell and avatar are omitted: there is no auth or notification
-              system behind them, and non-functional chrome reads as broken UI. */}
+          {/* The mockup's bell and avatar are omitted: there is no notification system
+              or user profile behind them, and non-functional chrome reads as broken UI. */}
           <div className="flex items-center gap-2.5">
             <TourGuide />
+            <button
+              type="button"
+              onClick={logOut}
+              className="inline-flex h-[36px] items-center rounded-full border border-line bg-white px-4 text-[12px] font-bold text-muted transition-colors hover:border-indigo hover:text-indigo"
+            >
+              Log out
+            </button>
           </div>
         </header>
 

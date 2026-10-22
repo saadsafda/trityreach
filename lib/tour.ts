@@ -21,9 +21,9 @@ const WORKFLOW_STEPS: AuthoredStep[] = [
   {
     element: '[data-tour="nav"]',
     popover: {
-      title: "Two workspaces",
+      title: "Three workspaces",
       description:
-        "<b>Discovery</b> is where you search for prospects and watch the run. <b>CRM</b> is where every lead lands, with its full conversation history.",
+        "<b>Discovery</b> is where you search for prospects and watch the run. <b>CRM</b> is where every lead lands, with its full conversation history. <b>Integrations</b> connects your ERP, so new leads are saved there and ones you already have are skipped.",
       side: "bottom",
       align: "start",
     },
@@ -40,8 +40,9 @@ const WORKFLOW_STEPS: AuthoredStep[] = [
   {
     element: '[data-tour="query"]',
     popover: {
-      title: "Describe what you're looking for",
-      description: "The kind of business you want to find — <i>“Coffee shops”</i>, <i>“Independent dentists”</i>.",
+      title: "Choose what you're looking for",
+      description:
+        "In <b>Store Finder</b>, tick the kinds of stores you sell to — supermarkets, dollar stores, convenience stores… In the other sources, type any business, e.g. <i>“Independent dentists”</i>.",
       side: "bottom",
     },
   },
@@ -50,7 +51,7 @@ const WORKFLOW_STEPS: AuthoredStep[] = [
     popover: {
       title: "…and where",
       description:
-        "A city or region. Be specific — <i>“London, Ontario”</i> finds different businesses than <i>“London, UK”</i>.",
+        "A city or region — Store Finder takes several (press Enter after each). Be specific: <i>“Edison, NJ”</i>, not just <i>“New Jersey”</i>.",
       side: "bottom",
     },
   },
@@ -59,7 +60,7 @@ const WORKFLOW_STEPS: AuthoredStep[] = [
     popover: {
       title: "Pick a data source",
       description:
-        "<b>Web Scraper</b> searches the open web and pulls contact details from each site. <b>Google Maps</b> also returns businesses that have no website at all — useful when a phone number is enough.",
+        "<b>Store Finder</b> searches Google Maps for retail buyers and skips national chains. <b>Google Maps</b> finds any business type, including ones with no website. <b>Web Scraper</b> searches the open web for free but is less predictable.",
       side: "top",
     },
   },

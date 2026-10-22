@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { CloseIcon, PlusIcon } from "@/components/icons";
+import { useStoreCatalog } from "@/lib/use-store-catalog";
 import type { Lead, LeadField } from "@/lib/types";
 
 const FIELDS: { key: LeadField; label: string; placeholder: string; required?: boolean; span2?: boolean }[] = [
@@ -22,7 +23,12 @@ const EMPTY: Lead = {
   website: "",
   city: "",
   address: "",
+  store_type: "",
+  lat: "",
+  lng: "",
 };
+
+
 
 export default function AddLeadModal({
   onClose,
@@ -33,6 +39,9 @@ export default function AddLeadModal({
   onAdded: () => void;
 }) {
   const [values, setValues] = useState<Lead>(EMPTY);
+  const { types: storeCatalog } = useStoreCatalog();
+  /** Same labels the store finder writes ("Dollar store"), incl. your own types. */
+  const storeTypeOptions = storeCatalog.filter((type) => !type.hidden).map((type) => type.singular);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -125,6 +134,21 @@ export default function AddLeadModal({
                 />
               </label>
             ))}
+            <label className="flex flex-col gap-1.5 sm:col-span-2">
+              <span className="text-[11px] font-bold text-[#464353]">Store type</span>
+              <select
+                value={values.store_type}
+                onChange={(event) => setField("store_type", event.target.value)}
+                className="h-[42px] rounded-[10px] border border-[#d8d6e2] bg-white px-3 text-[13px] text-ink outline-none focus:border-indigo"
+              >
+                <option value="">Not set</option>
+                {storeTypeOptions.map((label) => (
+                  <option key={label} value={label}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           {error && (

@@ -1,20 +1,55 @@
 # TrityReach lead scraper
 
-This local scraper uses DuckDuckGo discovery, ScrapeGraphAI, Playwright, and
-OpenAI `gpt-4o-mini` to find businesses from a keyword/location query and then
-extract business name, contact name, email, phone, website, city, and address.
-Results are written to `leads.csv`; discovered websites are written to
-`urls.txt`.
+This local scraper finds businesses from a keyword/location query and extracts
+business name, contact name, email, phone, website, city, and address. Results
+are written to `leads.csv`; discovered websites are written to `urls.txt`.
 
-Search results are treated as candidate sources rather than guaranteed leads.
-The scraper checks extra candidates until it reaches the requested lead target
-or exhausts the search pool. After a lead is identified, it visits both the
-original source page and the official website, follows contact/about pages, and
-uses a headless-browser fallback for JavaScript-rendered sites. This recovers
-public email, phone number, and postal address data that was not present on the
-search page. Addresses are read from schema.org / `<address>` markup, which
-keeps false positives low. A field remains blank when the business does not
-publish it publicly; the scraper never invents contact details.
+There are three discovery sources:
+
+- **Store Finder** (`--source stores`, needs `GOOGLE_MAPS_API_KEY`) — built for
+  wholesale suppliers (Cotton Valley / Universal Distribution): pick store
+  types (supermarkets, dollar, convenience, variety, international grocery,
+  pharmacy, hardware, home goods, restaurants & delis) and one or more
+  locations. Google Maps is searched round-robin across every type × location;
+  closed, off-type and uncontactable listings are dropped, and with
+  `--independent-only` so are national/regional chains (known names, plus any
+  name seen at 3+ locations in a run) — chains buy through head office.
+  `--max-requests` caps Google spend (~$0.035 per request). Each lead gets a
+  `store_type`, and its address/type/rating go into the ERPNext Lead's notes.
+  Locations can be cities or **5-digit US ZIP codes**: the dashboard resolves a
+  ZIP's centre (OpenStreetMap Nominatim, cached in `data/zip-cache.json`) and
+  passes it as `08817@lat,lng`; Google Maps is then restricted to the area and
+  results are kept only inside the ZIP (`--zip-radius 0`) or within N miles.
+  Built-in store types live in `store-types.json` (shared by the scraper and
+  the dashboard); types you add or remove on the dashboard (**+ Add / remove
+  types**) are saved to `data/store-types.json`. Targets go up to 1,000 stores
+  per run; Google returns at most 60 results per search phrase per city, so
+  big targets need several cities/types (the dashboard shows what a selection
+  can reach and its cost, capped at 400 requests ≈ $14).
+  Example: `venv/bin/python scrape_leads.py --source stores --store-types
+  dollar,supermarket --locations "Edison, NJ|Newark, NJ" --independent-only
+  --max-results 25 --no-outreach`
+- **Google Maps** (`--source maps`, needs `GOOGLE_MAPS_API_KEY`) — the most
+  reliable: real businesses with phone and address, including ones with no
+  website. Each lead's website is then crawled for its email and contact person.
+- **Web search** (`--source web`, the default, free) — searches Yahoo and other
+  engines via `ddgs`. Business sites become leads directly; directory and
+  "best X in Y" guide pages are not leads, but the crawler follows their
+  outbound links to the businesses they list. News, finance, government, and
+  social pages are dropped. Free search engines throttle and vary from run to
+  run, so this source is less predictable than Google Maps.
+
+Every website is read with [Crawl4AI](https://github.com/unclecode/crawl4ai) in
+a stealth headless Chromium (JavaScript-rendered sites work): the homepage plus
+up to three contact/about pages. Contacts come straight from the HTML —
+schema.org data, `mailto:`/`tel:` links, and page text — so **no LLM is
+required**. A site must mention the searched business type and place and
+publish an email or phone to count as a lead. When `OPENAI_API_KEY` works, one
+small model call per site additionally confirms the match and fills missing
+fields; anything contact-like the model returns must appear verbatim on the
+page, so it can't invent details. A field stays blank when the business doesn't
+publish it. Sites behind hard anti-bot walls (Akamai, DataDome, Cloudflare
+challenges) are skipped.
 
 ## Configure
 
@@ -25,8 +60,8 @@ in `venv/`. Create your local secret file:
 cp .env.example .env
 ```
 
-Replace the placeholder in `.env` with your real OpenAI API key, then edit
-`urls.txt` so it contains one target URL per line.
+Add the keys you use to `.env` (all optional — see `.env.example`). To crawl
+your own list instead of searching, put one URL per line in `urls.txt`.
 
 ## Run
 
@@ -57,12 +92,14 @@ To rebuild the environment later:
 python3.12 -m venv venv
 venv/bin/python -m pip install -r requirements.txt
 venv/bin/playwright install chromium
+venv/bin/crawl4ai-setup
 ```
 
 ## Automated outreach (n8n)
 
-When `N8N_WEBHOOK_URL` is set in `.env` (or `--webhook-url` is passed), every
-saved lead is POSTed as JSON to the n8n outreach workflow after the CSV is
+When `N8N_WEBHOOK_URL` is set in `.env` (or `--webhook-url` is passed) and the
+run isn't started with `--no-outreach` (the dashboard's **Auto-call new leads**
+switch, off by default), every saved lead is POSTed as JSON to the n8n outreach workflow after the CSV is
 written. The workflow drafts a personalized message with AI, then routes by
 available data: WhatsApp (Unipile) when a phone number exists, email (Gmail)
 when an email exists, an AI phone call (Retell AI) when there is a phone but no
@@ -108,12 +145,30 @@ The Next.js dashboard is a 2-page app built with Tailwind CSS:
   so automatic outreach is calls-only; email and WhatsApp fire only when
   explicitly chosen from the dashboard.
 
+  **Upload leads**: the CRM's "Upload leads" button imports a CSV or Excel
+  (.xlsx) list — up to 5,000 rows / 5 MB per file. Columns are matched from
+  their headers (Company, Store Name, Phone, Cell, E-mail, Address, City,
+  State, ZIP, Store type…; editable before import), split columns are joined
+  (first + last name; street + city + state + ZIP). Rows need a business name
+  and a phone or email; duplicates within the file, already in the CRM
+  (email or phone, any formatting), or optionally already in the ERP are
+  skipped. Imported leads are saved as manual leads. No outreach is sent.
+
   **Manual leads**: the "Add lead" button opens a form that saves to
   `data/manual-leads.json` via `POST /api/leads` (requires a business name plus
   an email or phone; duplicates by email/phone are rejected). Manual leads are
   merged with scraped ones everywhere — table, outreach buttons, CSV export —
   and are kept in a separate file precisely so the scraper's `leads.csv`
   rewrite on each run never deletes them.
+
+- **`/map` — Lead map**: every lead from the latest run plus every Lead in the
+  connected ERPNext, as pins coloured by store type (Leaflet + OpenStreetMap
+  tiles, no API key). Store Finder / Google Maps leads carry exact coordinates
+  (`lat`/`lng` columns, also saved as a map link in the ERPNext note). Older
+  leads are geocoded once from their address (note, or a `custom_address`
+  field) or, failing that, placed at their city (shown hollow) — via
+  OpenStreetMap Nominatim at 1 request/second, cached in
+  `data/geocode-cache.json`.
 
 Both pages poll the same on-disk state (`leads.csv`, `data/*.json`) that
 `scrape_leads.py` and the n8n workflow write to — nothing on either page is

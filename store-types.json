@@ -1,0 +1,254 @@
+{
+  "_comment": "Built-in Store Finder categories, shared by scrape_leads.py and the dashboard. User additions/removals live in data/store-types.json.",
+  "defaults": [
+    "supermarket",
+    "dollar",
+    "convenience",
+    "variety"
+  ],
+  "types": [
+    {
+      "key": "supermarket",
+      "label": "Supermarkets",
+      "singular": "Supermarket",
+      "plural": "Supermarkets",
+      "color": "#2f7d4f",
+      "hint": "Supermarkets and grocery stores",
+      "queries": [
+        "supermarket",
+        "grocery store"
+      ],
+      "googleTypes": [
+        "asian_grocery_store",
+        "discount_supermarket",
+        "food_store",
+        "grocery_store",
+        "market",
+        "supermarket"
+      ],
+      "keywords": [
+        "market",
+        "grocery",
+        "supermarket",
+        "foods"
+      ]
+    },
+    {
+      "key": "dollar",
+      "label": "Dollar stores",
+      "singular": "Dollar store",
+      "plural": "Dollar stores",
+      "color": "#5b4fe9",
+      "hint": "Dollar, 99¢ and discount stores",
+      "queries": [
+        "dollar store",
+        "99 cent store",
+        "discount store"
+      ],
+      "googleTypes": [
+        "department_store",
+        "discount_store",
+        "general_store",
+        "home_goods_store",
+        "store",
+        "variety_store"
+      ],
+      "keywords": [
+        "dollar",
+        "99",
+        "discount",
+        "bargain",
+        "deals",
+        "value"
+      ]
+    },
+    {
+      "key": "convenience",
+      "label": "Convenience stores",
+      "singular": "Convenience store",
+      "plural": "Convenience stores",
+      "color": "#d9822b",
+      "hint": "Convenience stores, delis, mini marts",
+      "queries": [
+        "convenience store",
+        "deli grocery",
+        "mini mart"
+      ],
+      "googleTypes": [
+        "convenience_store",
+        "food_store",
+        "grocery_store",
+        "liquor_store",
+        "store"
+      ],
+      "keywords": [
+        "mart",
+        "deli",
+        "convenience",
+        "bodega",
+        "grocery",
+        "market"
+      ]
+    },
+    {
+      "key": "variety",
+      "label": "Variety stores",
+      "singular": "Variety store",
+      "plural": "Variety stores",
+      "color": "#c2417a",
+      "hint": "Variety and general stores",
+      "queries": [
+        "variety store",
+        "general store"
+      ],
+      "googleTypes": [
+        "department_store",
+        "discount_store",
+        "general_store",
+        "home_goods_store",
+        "store",
+        "variety_store"
+      ],
+      "keywords": [
+        "variety",
+        "general",
+        "discount",
+        "dollar",
+        "gift"
+      ]
+    },
+    {
+      "key": "international",
+      "label": "International grocery",
+      "singular": "International grocery",
+      "plural": "International groceries",
+      "color": "#1d8fb3",
+      "hint": "Indian, Hispanic, Asian and other ethnic groceries",
+      "queries": [
+        "international grocery store",
+        "indian grocery store",
+        "hispanic supermarket",
+        "asian supermarket"
+      ],
+      "googleTypes": [
+        "asian_grocery_store",
+        "food_store",
+        "grocery_store",
+        "market",
+        "supermarket"
+      ],
+      "keywords": [
+        "market",
+        "grocery",
+        "bazaar",
+        "foods",
+        "mart",
+        "supermercado"
+      ]
+    },
+    {
+      "key": "pharmacy",
+      "label": "Pharmacies",
+      "singular": "Pharmacy",
+      "plural": "Pharmacies",
+      "color": "#d64545",
+      "hint": "Independent pharmacies (health & beauty)",
+      "queries": [
+        "independent pharmacy",
+        "drugstore"
+      ],
+      "googleTypes": [
+        "drugstore",
+        "pharmacy"
+      ],
+      "keywords": [
+        "pharmacy",
+        "drug",
+        "chemist",
+        "apothecary"
+      ]
+    },
+    {
+      "key": "hardware",
+      "label": "Hardware stores",
+      "singular": "Hardware store",
+      "plural": "Hardware stores",
+      "color": "#7a5c3e",
+      "hint": "Hardware and home-improvement stores",
+      "queries": [
+        "hardware store"
+      ],
+      "googleTypes": [
+        "hardware_store",
+        "home_improvement_store"
+      ],
+      "keywords": [
+        "hardware",
+        "supply",
+        "lumber",
+        "paint"
+      ]
+    },
+    {
+      "key": "home_goods",
+      "label": "Home goods",
+      "singular": "Home goods store",
+      "plural": "Home goods stores",
+      "color": "#8d6bd8",
+      "hint": "Home goods, kitchen and housewares stores",
+      "queries": [
+        "home goods store",
+        "kitchen supply store",
+        "housewares store"
+      ],
+      "googleTypes": [
+        "department_store",
+        "furniture_store",
+        "home_goods_store",
+        "home_improvement_store",
+        "store"
+      ],
+      "keywords": [
+        "home",
+        "kitchen",
+        "house",
+        "linen",
+        "bath",
+        "decor"
+      ]
+    },
+    {
+      "key": "foodservice",
+      "label": "Restaurants & delis",
+      "singular": "Restaurant / deli",
+      "plural": "Restaurants & delis",
+      "color": "#b8962e",
+      "hint": "Delis, takeout and pizzerias — buyers of foam & paper disposables",
+      "queries": [
+        "deli",
+        "takeout restaurant",
+        "pizzeria"
+      ],
+      "googleTypes": [
+        "bakery",
+        "cafe",
+        "deli",
+        "fast_food_restaurant",
+        "meal_delivery",
+        "meal_takeaway",
+        "pizza_restaurant",
+        "restaurant",
+        "sandwich_shop"
+      ],
+      "keywords": [
+        "deli",
+        "pizza",
+        "grill",
+        "kitchen",
+        "restaurant",
+        "cafe",
+        "bagel"
+      ]
+    }
+  ]
+}

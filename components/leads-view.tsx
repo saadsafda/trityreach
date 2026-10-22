@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import AddLeadModal from "@/components/add-lead-modal";
+import SendToErpButton from "@/components/send-to-erp-button";
+import UploadLeadsModal from "@/components/upload-leads-modal";
 import ChannelStatus from "@/components/channel-status";
 import ConversationThread from "@/components/conversation-thread";
 import {
@@ -12,11 +14,13 @@ import {
   MapPinIcon,
   PhoneIcon,
   PlusIcon,
+  RefreshIcon,
   SearchIcon,
+  UploadIcon,
 } from "@/components/icons";
 import AppShell from "@/components/app-shell";
 import { leadKeyForClient } from "@/lib/lead-key";
-import type { ConversationEntry, DashboardState, Lead } from "@/lib/types";
+import type { ConversationEntry, DashboardState, ErpNextStatus, Lead } from "@/lib/types";
 
 type SendState = "sending" | "sent" | "error";
 type OutreachChannel = "call" | "email";
@@ -56,6 +60,11 @@ export default function LeadsView() {
   const [sendStates, setSendStates] = useState<Record<string, LeadSendState>>({});
   const [sendingAll, setSendingAll] = useState(false);
   const [showAddLead, setShowAddLead] = useState(false);
+  const [showUpload, setShowUpload] = useState(false);
+  const [storeTypeFilter, setStoreTypeFilter] = useState("all");
+  const [erpnext, setErpnext] = useState<ErpNextStatus | null>(null);
+  const [syncingErp, setSyncingErp] = useState(false);
+  const [syncNotice, setSyncNotice] = useState("");
 
   const fetchData = useCallback(async () => {
     try {
@@ -66,6 +75,7 @@ export default function LeadsView() {
       const statePayload = (await stateResponse.json()) as DashboardState & { error?: string };
       if (!stateResponse.ok) throw new Error(statePayload.error || "Could not load leads");
       setLeads(statePayload.leads);
+      setErpnext(statePayload.erpnext);
 
       if (conversationsResponse.ok) {
         const conversationsPayload = (await conversationsResponse.json()) as { conversations: ConversationEntry[] };
@@ -102,12 +112,18 @@ export default function LeadsView() {
     return leads.filter((lead) => {
       const matchesSearch = !needle || Object.values(lead).some((value) => value.toLowerCase().includes(needle));
       if (!matchesSearch) return false;
+      if (storeTypeFilter !== "all" && (lead.store_type || "") !== storeTypeFilter) return false;
       if (channelFilter === "all") return true;
       const entries = conversationsByLead.get(leadKeyForClient(lead)) ?? [];
       if (channelFilter === "none") return entries.length === 0;
       return entries.some((entry) => entry.channel === channelFilter);
     });
-  }, [leads, search, channelFilter, conversationsByLead]);
+  }, [leads, search, channelFilter, storeTypeFilter, conversationsByLead]);
+
+  const storeTypeOptions = useMemo(
+    () => [...new Set(leads.map((lead) => lead.store_type).filter(Boolean))].sort(),
+    [leads],
+  );
 
   const selectedLead = useMemo(
     () => leads.find((lead) => leadKeyForClient(lead) === selectedLeadKey) ?? null,
@@ -166,6 +182,31 @@ export default function LeadsView() {
       setError(sendError instanceof Error ? sendError.message : "Could not start the calls");
     } finally {
       setSendingAll(false);
+    }
+  }
+
+  async function syncToErpNext() {
+    setError("");
+    setSyncNotice("");
+    setSyncingErp(true);
+    try {
+      const response = await fetch("/api/erpnext/sync", { method: "POST" });
+      const payload = (await response.json()) as {
+        created?: number;
+        skipped?: number;
+        failed?: { business: string; error: string }[];
+        error?: string;
+      };
+      if (!response.ok) throw new Error(payload.error || "Could not sync with ERP");
+      const failed = payload.failed ?? [];
+      setSyncNotice(
+        `ERP sync: ${payload.created ?? 0} created, ${payload.skipped ?? 0} already there` +
+          (failed.length ? `, ${failed.length} failed (${failed.map((item) => `${item.business}: ${item.error}`).join("; ")})` : "."),
+      );
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : "Could not sync with ERP");
+    } finally {
+      setSyncingErp(false);
     }
   }
 
@@ -247,6 +288,12 @@ export default function LeadsView() {
           </div>
         )}
 
+        {syncNotice && !error && (
+          <div className="mb-5 flex gap-2.5 rounded-xl bg-indigo-soft px-4 py-3.5 text-[12px] text-indigo" role="status">
+            {syncNotice}
+          </div>
+        )}
+
         <section className="overflow-hidden rounded-[20px] border border-line bg-white shadow-panel">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-[26px] py-6">
             <div>
@@ -278,6 +325,21 @@ export default function LeadsView() {
                   </button>
                 ))}
               </div>
+              {storeTypeOptions.length > 0 && (
+                <select
+                  value={storeTypeFilter}
+                  onChange={(event) => setStoreTypeFilter(event.target.value)}
+                  aria-label="Filter by store type"
+                  className="h-[43px] rounded-[11px] border border-[#dcdbe5] bg-white px-3 text-[12px] font-semibold text-[#3f3d4d] outline-none focus:border-indigo"
+                >
+                  <option value="all">All store types</option>
+                  {storeTypeOptions.map((type) => (
+                    <option key={type} value={type}>
+                      {type}
+                    </option>
+                  ))}
+                </select>
+              )}
               <label
                 className="flex h-[43px] w-full items-center gap-2 rounded-[11px] border border-[#dcdbe5] px-3 text-[#9996a5] focus-within:border-indigo focus-within:shadow-[0_0_0_3px_rgba(91,79,233,0.08)] sm:w-[220px]"
                 data-tour="crm-search"
@@ -299,6 +361,30 @@ export default function LeadsView() {
               >
                 <PlusIcon /> Add lead
               </button>
+              <button
+                type="button"
+                onClick={() => setShowUpload(true)}
+                data-tour="upload-leads"
+                className="inline-flex h-[43px] items-center justify-center gap-2 whitespace-nowrap rounded-[11px] border border-[#dcdbe5] bg-white px-4 text-[12px] font-bold text-[#3f3d4d] hover:border-indigo hover:text-indigo"
+              >
+                <UploadIcon /> Upload leads
+              </button>
+              {erpnext?.connected && (
+                <button
+                  type="button"
+                  onClick={() => void syncToErpNext()}
+                  disabled={syncingErp || !leads.length}
+                  title={`Create every lead that isn't in ${erpnext.url} yet`}
+                  className="inline-flex h-[43px] items-center justify-center gap-2 whitespace-nowrap rounded-[11px] border border-[#dcdbe5] bg-white px-4 text-[12px] font-bold text-[#3f3d4d] hover:enabled:border-indigo hover:enabled:text-indigo"
+                >
+                  {syncingErp ? (
+                    <span className="size-3.5 animate-spin-fast rounded-full border-2 border-indigo/25 border-t-indigo" />
+                  ) : (
+                    <RefreshIcon />
+                  )}
+                  {syncingErp ? "Syncing…" : "Sync to ERP"}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => void callAllLeads()}
@@ -343,6 +429,11 @@ export default function LeadsView() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-1.5">
+                    {lead.store_type && (
+                      <span className="rounded-full bg-indigo-soft px-2.5 py-1 text-[10px] font-bold text-indigo">
+                        {lead.store_type}
+                      </span>
+                    )}
                     <span className="inline-flex items-center gap-1 rounded-full bg-[#f1f0f5] px-2.5 py-1 text-[10px] font-bold text-[#696777]">
                       {source.icon}
                       {source.label}
@@ -359,6 +450,7 @@ export default function LeadsView() {
                     onClick={(event) => event.stopPropagation()}
                   >
                     <OutreachButtons lead={lead} leadKey={leadKey} />
+                    {erpnext?.connected && <SendToErpButton lead={lead} size="row" />}
                     <ChevronRightIcon />
                   </div>
                 </div>
@@ -404,6 +496,13 @@ export default function LeadsView() {
       )}
 
       {showAddLead && <AddLeadModal onClose={() => setShowAddLead(false)} onAdded={() => void fetchData()} />}
+      {showUpload && (
+        <UploadLeadsModal
+          erpConnected={Boolean(erpnext?.connected)}
+          onClose={() => setShowUpload(false)}
+          onImported={() => void fetchData()}
+        />
+      )}
     </AppShell>
   );
 }

@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parse } from "csv-parse/sync";
 import { leadKeyForClient } from "@/lib/lead-key";
+import { DEFAULT_STORE_TYPES } from "@/lib/store-types";
 import {
   ActivityEvent,
   DashboardState,
@@ -93,17 +94,40 @@ export async function writeUrls(urls: string[]): Promise<void> {
   await writeTextAtomic(URLS_PATH, `${urls.join("\n")}\n`);
 }
 
+/** Allowed "around each ZIP" radii in miles (0 = only inside the ZIP). */
+export const ZIP_RADII = [0, 2, 5, 10, 25];
+
+const DEFAULT_SEARCH: SearchPreferences = {
+  query: "",
+  limit: 25,
+  source: "stores",
+  storeTypes: [...DEFAULT_STORE_TYPES],
+  locations: [],
+  zipRadius: 5,
+  autoOutreach: false,
+};
+
 export async function readSearchPreferences(): Promise<SearchPreferences> {
-  if (!(await exists(SEARCH_CONFIG_PATH))) return { query: "", limit: 5, source: "web" };
+  if (!(await exists(SEARCH_CONFIG_PATH))) return DEFAULT_SEARCH;
   try {
     const value = JSON.parse(await fs.readFile(SEARCH_CONFIG_PATH, "utf8")) as Partial<SearchPreferences>;
+    const source = value.source === "maps" || value.source === "web" || value.source === "stores" ? value.source : "stores";
+    // Keys are checked against the live catalog (incl. custom types) by the
+    // dashboard and the scrape route; here only the shape is validated.
+    const storeTypes = Array.isArray(value.storeTypes)
+      ? value.storeTypes.map(String).filter((key) => /^[a-z0-9_]{2,60}$/.test(key)).slice(0, 50)
+      : [];
     return {
       query: typeof value.query === "string" ? value.query : "",
-      limit: Math.min(25, Math.max(1, Number(value.limit) || 5)),
-      source: value.source === "maps" ? "maps" : "web",
+      limit: Math.min(source === "stores" ? 1000 : 25, Math.max(1, Number(value.limit) || 5)),
+      source,
+      storeTypes: storeTypes.length ? storeTypes : [...DEFAULT_STORE_TYPES],
+      locations: Array.isArray(value.locations) ? value.locations.map(String).filter(Boolean).slice(0, 20) : [],
+      zipRadius: ZIP_RADII.includes(Number(value.zipRadius)) ? Number(value.zipRadius) : 5,
+      autoOutreach: value.autoOutreach === true,
     };
   } catch {
-    return { query: "", limit: 5, source: "web" };
+    return DEFAULT_SEARCH;
   }
 }
 
@@ -111,7 +135,7 @@ export async function writeSearchPreferences(value: SearchPreferences): Promise<
   await writeTextAtomic(SEARCH_CONFIG_PATH, JSON.stringify(value, null, 2));
 }
 
-async function readScrapedLeads(): Promise<Lead[]> {
+export async function readScrapedLeads(): Promise<Lead[]> {
   if (!(await exists(LEADS_PATH))) return [];
   const csv = await fs.readFile(LEADS_PATH, "utf8");
   const records = parse(csv.replace(/^\uFEFF/, ""), {
@@ -152,6 +176,15 @@ export async function appendManualLead(lead: Lead): Promise<void> {
     const existing = await readManualLeads();
     existing.push(lead);
     await writeTextAtomic(MANUAL_LEADS_PATH, JSON.stringify(existing, null, 2));
+  });
+}
+
+/** Append many manual leads in one write (file uploads). */
+export async function appendManualLeads(leads: Lead[]): Promise<void> {
+  if (!leads.length) return;
+  await withAppendLock(MANUAL_LEADS_PATH, async () => {
+    const existing = await readManualLeads();
+    await writeTextAtomic(MANUAL_LEADS_PATH, JSON.stringify([...existing, ...leads], null, 2));
   });
 }
 
@@ -202,7 +235,9 @@ export function isProcessRunning(pid?: number): boolean {
   }
 }
 
-export async function readDashboardState(): Promise<DashboardState> {
+/** Everything on the dashboard except the ERPNext status, which
+ * app/api/state adds (lib/erpnext imports this module, so not the reverse). */
+export async function readDashboardState(): Promise<Omit<DashboardState, "erpnext">> {
   const [search, leads, savedStatus] = await Promise.all([
     readSearchPreferences(),
     readLeads(),

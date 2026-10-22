@@ -192,3 +192,144 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* Lead map popups (components/map-view.tsx builds their HTML for Leaflet). */
+.tr-pin {
+  background: none;
+  border: 0;
+}
+/* Mute the street map so coloured lead pins stand out. */
+.tr-tiles {
+  filter: saturate(0.45) brightness(1.04);
+}
+.leaflet-popup-content-wrapper {
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(20, 18, 40, 0.18);
+}
+.leaflet-popup-content {
+  margin: 14px 16px;
+  font-family: inherit;
+}
+.tr-popup {
+  display: flex;
+  min-width: 200px;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #55536a;
+}
+.tr-popup-type {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.tr-popup-name {
+  font-size: 14px;
+  color: #17151f;
+}
+.tr-popup-rows a,
+.tr-popup-foot a {
+  color: #5b4fe9;
+  text-decoration: none;
+}
+.tr-popup-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid #eeedf3;
+}
+.tr-popup-foot a {
+  margin-left: auto;
+  font-weight: 700;
+}
+.tr-badge {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* Lead map pins: latest leads pulse so they're easy to spot among old ones. */
+.tr-pin-dot {
+  display: block;
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(20, 18, 40, 0.35);
+}
+.tr-pin-latest .tr-pin-dot {
+  animation: tr-pin-pulse 1.8s ease-out infinite;
+}
+.tr-key-latest {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  --pin: #16a34a;
+  animation: tr-pin-pulse 1.8s ease-out infinite;
+}
+@keyframes tr-pin-pulse {
+  0% {
+    box-shadow: 0 1px 4px rgba(20, 18, 40, 0.35), 0 0 0 0 color-mix(in srgb, var(--pin) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 1px 4px rgba(20, 18, 40, 0.35), 0 0 0 9px color-mix(in srgb, var(--pin) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 1px 4px rgba(20, 18, 40, 0.35), 0 0 0 0 color-mix(in srgb, var(--pin) 0%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tr-pin-latest .tr-pin-dot,
+  .tr-key-latest {
+    animation: none;
+  }
+}
+
+/* Cluster bubble: a pie of latest (green) vs already-in-ERPNext (indigo). */
+.tr-cluster {
+  background: none;
+  border: 0;
+}
+.tr-cluster-ring {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(20, 18, 40, 0.3);
+}
+.tr-cluster-count {
+  display: grid;
+  place-items: center;
+  width: calc(100% - 10px);
+  height: calc(100% - 10px);
+  border-radius: 50%;
+  background: #fff;
+  color: #17151f;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.tr-status {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 4px;
+  border-radius: 999px;
+  padding: 2px 9px 2px 7px;
+  font-size: 10px;
+  font-weight: 800;
+}
+.tr-status span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.tr-popup-note {
+  flex: 1 1 100%;
+  font-size: 11px;
+  color: #6b6980;
+}

@@ -6,31 +6,15 @@ import {
   ensureDataDirectory,
   readLeads,
 } from "@/lib/storage";
-import { LEAD_FIELDS, type Lead } from "@/lib/types";
+import { validateLead } from "@/lib/lead-input";
+import type { Lead } from "@/lib/types";
 
 export const runtime = "nodejs";
 
 function normalizeLead(body: Record<string, unknown>): Lead {
-  const lead = Object.fromEntries(
-    LEAD_FIELDS.map((field) => [field, String(body[field] ?? "").trim().slice(0, 300)]),
-  ) as Lead;
-
-  if (!lead.business_name) {
-    throw new Error("Business name is required.");
-  }
-  if (!lead.email && !lead.phone) {
-    throw new Error("Add an email or a phone number so the lead can be contacted.");
-  }
-  if (lead.email && !/^\S+@\S+\.\S+$/.test(lead.email)) {
-    throw new Error("The email address does not look valid.");
-  }
-  if (lead.phone && lead.phone.replace(/\D/g, "").length < 7) {
-    throw new Error("The phone number does not look valid.");
-  }
-  if (lead.website && !/^https?:\/\//i.test(lead.website)) {
-    lead.website = `https://${lead.website}`;
-  }
-  return lead;
+  const result = validateLead(body);
+  if ("error" in result) throw new Error(result.error);
+  return result.lead;
 }
 
 export async function POST(request: Request) {

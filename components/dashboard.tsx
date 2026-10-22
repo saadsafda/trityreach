@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ActivityFeed from "@/components/activity-feed";
 import AppShell from "@/components/app-shell";
 import {
+  BuildingIcon,
   DownloadIcon,
   EmailIcon,
   FilterIcon,
@@ -12,9 +13,17 @@ import {
   PhoneIcon,
   SearchIcon,
   SparkIcon,
+  UploadIcon,
 } from "@/components/icons";
 import { leadKeyForClient } from "@/lib/lead-key";
-import type { ActivityEvent, DashboardState, JobStatus, Lead, LeadField } from "@/lib/types";
+import Link from "next/link";
+import SendToErpButton from "@/components/send-to-erp-button";
+import StoreTypesModal from "@/components/store-types-modal";
+import UploadLeadsModal from "@/components/upload-leads-modal";
+import type { SearchMemorySummary } from "@/lib/store-search-memory";
+import { DEFAULT_STORE_TYPES, PLACES_COST_PER_REQUEST, storeSearchPlan } from "@/lib/store-types";
+import { useStoreCatalog } from "@/lib/use-store-catalog";
+import type { ActivityEvent, DashboardState, ErpNextStatus, JobStatus, Lead, LeadField, LeadSource } from "@/lib/types";
 
 const CSV_COLUMNS: { key: LeadField; label: string }[] = [
   { key: "business_name", label: "Business" },
@@ -24,6 +33,7 @@ const CSV_COLUMNS: { key: LeadField; label: string }[] = [
   { key: "website", label: "Website" },
   { key: "city", label: "City" },
   { key: "address", label: "Address" },
+  { key: "store_type", label: "Store type" },
 ];
 
 const DEFAULT_STATUS: JobStatus = {
@@ -109,10 +119,12 @@ function LeadCard({
   lead,
   sendState,
   onOutreach,
+  erpConnected,
 }: {
   lead: Lead;
   sendState?: { channel: "call" | "email"; state: "sending" | "sent" | "error" };
   onOutreach: (channel: "call" | "email") => void;
+  erpConnected: boolean;
 }) {
   const initial = (lead.business_name || "?").charAt(0).toUpperCase();
   const hasContact = Boolean(lead.email || lead.phone);
@@ -134,7 +146,10 @@ function LeadCard({
           <span className="grid size-10 flex-none place-items-center rounded-full bg-indigo-soft text-[14px] font-extrabold text-indigo">
             {initial}
           </span>
-          <h3 className="m-0 truncate text-[16px] tracking-[-0.02em]">{lead.business_name || "Not found"}</h3>
+          <div className="min-w-0">
+            <h3 className="m-0 truncate text-[16px] tracking-[-0.02em]">{lead.business_name || "Not found"}</h3>
+            {lead.store_type && <span className="block truncate text-[11px] font-semibold text-indigo">{lead.store_type}</span>}
+          </div>
         </div>
         <span
           className={`flex-none rounded-full px-2.5 py-1 text-[10px] font-bold ${
@@ -243,10 +258,14 @@ function LeadCard({
             </button>
           );
         })}
+        {erpConnected && <SendToErpButton lead={lead} />}
       </div>
     </article>
   );
 }
+
+/** Most cities one Store Finder run may search (also enforced by /api/scrape). */
+const MAX_LOCATIONS = 20;
 
 type OutreachChannel = "call" | "email";
 type LeadSendState = { channel: OutreachChannel; state: "sending" | "sent" | "error" };
@@ -254,8 +273,22 @@ type LeadSendState = { channel: OutreachChannel; state: "sending" | "sent" | "er
 export default function Dashboard() {
   const [keywords, setKeywords] = useState("");
   const [location, setLocation] = useState("");
-  const [resultLimit, setResultLimit] = useState(5);
-  const [leadSource, setLeadSource] = useState<"web" | "maps">("web");
+  const [resultLimit, setResultLimit] = useState(25);
+  const [leadSource, setLeadSource] = useState<LeadSource>("stores");
+  const [storeTypes, setStoreTypes] = useState<string[]>([...DEFAULT_STORE_TYPES]);
+  const [locations, setLocations] = useState<string[]>([]);
+  const [locationDraft, setLocationDraft] = useState("");
+  const [autoOutreach, setAutoOutreach] = useState(false);
+  const locationInputRef = useRef<HTMLInputElement>(null);
+  const { types: storeCatalog, setTypes: setStoreCatalog } = useStoreCatalog();
+  const [showStoreTypes, setShowStoreTypes] = useState(false);
+  const [showUpload, setShowUpload] = useState(false);
+  /** "08817" → "Edison, NJ", for ZIP chips. */
+  const [zipLabels, setZipLabels] = useState<Record<string, string>>({});
+  const [zipRadius, setZipRadius] = useState(5);
+  const [checkingZip, setCheckingZip] = useState(false);
+  /** What earlier Store Finder runs covered in the chosen locations. */
+  const [searchMemory, setSearchMemory] = useState<(SearchMemorySummary & { key: string }) | null>(null);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [status, setStatus] = useState<JobStatus>(DEFAULT_STATUS);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
@@ -263,9 +296,63 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [actionError, setActionError] = useState("");
   const [sendStates, setSendStates] = useState<Record<string, LeadSendState>>({});
+  const [erpnext, setErpnext] = useState<ErpNextStatus | null>(null);
   const initializedSearch = useRef(false);
 
   const query = joinQuery(keywords, location);
+  /** Locations including one typed but not yet added with Enter. */
+  const pendingLocations = useMemo(() => {
+    const draft = locationDraft.trim().replace(/\s+/g, " ");
+    return draft && !locations.includes(draft) ? [...locations, draft] : locations;
+  }, [locations, locationDraft]);
+  /** Store types still in the picker (removed ones drop out of the selection). */
+  const pickableTypes = useMemo(() => storeCatalog.filter((type) => !type.hidden), [storeCatalog]);
+  const selectedTypes = useMemo(
+    () => pickableTypes.filter((type) => storeTypes.includes(type.key)),
+    [pickableTypes, storeTypes],
+  );
+  const plan = storeSearchPlan(selectedTypes, pendingLocations.length, resultLimit);
+  const canRun =
+    leadSource === "stores" ? selectedTypes.length > 0 && pendingLocations.length > 0 : query.trim().length >= 3;
+
+  /** Look a ZIP up (cached server-side) so its chip can name the town. */
+  const lookupZip = useCallback(async (zip: string): Promise<string | null> => {
+    const response = await fetch(`/api/zip?zip=${zip}`, { cache: "no-store" });
+    const payload = (await response.json()) as { label?: string; error?: string };
+    if (!response.ok) throw new Error(payload.error || `ZIP code ${zip} wasn't found.`);
+    const label = payload.label || "";
+    setZipLabels((current) => ({ ...current, [zip]: label }));
+    return label;
+  }, []);
+
+  function addLocation(value: string) {
+    const place = value.trim().replace(/\s+/g, " ").replace(/;$/, "");
+    setLocationDraft("");
+    if (place.length < 2 || locations.includes(place) || locations.length >= MAX_LOCATIONS) return;
+    if (!/^\d{5}$/.test(place)) {
+      if (/^\d{3,9}(-\d{4})?$/.test(place)) {
+        setActionError("Enter a 5-digit ZIP code, e.g. 08817.");
+        return;
+      }
+      setLocations((current) => [...current, place]);
+      return;
+    }
+    // A ZIP: confirm it exists before adding the chip.
+    setCheckingZip(true);
+    setActionError("");
+    void lookupZip(place)
+      .then(() => setLocations((current) => (current.includes(place) ? current : [...current, place])))
+      .catch((error: unknown) => setActionError(error instanceof Error ? error.message : "Could not check that ZIP code"))
+      .finally(() => setCheckingZip(false));
+  }
+
+  const hasZip = pendingLocations.some((place) => /^\d{5}$/.test(place));
+
+  function changeSource(next: LeadSource) {
+    setLeadSource(next);
+    // Store runs go up to 100; web/maps runs stay at 25 or fewer.
+    setResultLimit((current) => (next === "stores" ? Math.max(10, current) : Math.min(25, current)));
+  }
 
   const fetchState = useCallback(async () => {
     try {
@@ -277,12 +364,20 @@ export default function Dashboard() {
       if (!stateResponse.ok) throw new Error(payload.error || "Could not load dashboard state");
       setLeads(payload.leads);
       setStatus(payload.status);
+      setErpnext(payload.erpnext);
       if (!initializedSearch.current) {
         const parts = splitQuery(payload.search.query);
         setKeywords(parts.keywords);
         setLocation(parts.location);
         setResultLimit(payload.search.limit);
-        setLeadSource(payload.search.source ?? "web");
+        setLeadSource(payload.search.source ?? "stores");
+        setStoreTypes(payload.search.storeTypes?.length ? payload.search.storeTypes : [...DEFAULT_STORE_TYPES]);
+        setLocations(payload.search.locations ?? []);
+        setZipRadius(typeof payload.search.zipRadius === "number" ? payload.search.zipRadius : 5);
+        for (const place of payload.search.locations ?? []) {
+          if (/^\d{5}$/.test(place)) void lookupZip(place).catch(() => undefined);
+        }
+        setAutoOutreach(payload.search.autoOutreach === true);
         initializedSearch.current = true;
       }
       if (activityResponse.ok) {
@@ -294,7 +389,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [lookupZip]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void fetchState(), 0);
@@ -311,6 +406,45 @@ export default function Dashboard() {
     status.status === "running" ||
     status.status === "enriching";
   const progress = status.total ? Math.round((status.completed / status.total) * 100) : 0;
+
+  const memoryKey = pendingLocations.join("|");
+  const memoryHint = leadSource === "stores" && searchMemory?.key === memoryKey ? searchMemory : null;
+  // Re-read after each run too (isActive flips back), so the count stays current.
+  useEffect(() => {
+    if (leadSource !== "stores" || isActive || !memoryKey) return;
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/store-search?locations=${encodeURIComponent(memoryKey)}`, { cache: "no-store" });
+        if (response.ok) setSearchMemory({ key: memoryKey, ...((await response.json()) as SearchMemorySummary) });
+      } catch {
+        // Only a hint; the run itself still continues where it left off.
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [leadSource, isActive, memoryKey]);
+
+  async function startSearchesOver() {
+    if (
+      !window.confirm(
+        "Start these searches over? The next run searches Google Maps from the top again and can return stores earlier runs already found (ones already in ERP are still skipped).",
+      )
+    ) {
+      return;
+    }
+    setActionError("");
+    try {
+      const response = await fetch("/api/store-search", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ locations: pendingLocations }),
+      });
+      const payload = (await response.json()) as SearchMemorySummary & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Could not start the searches over");
+      setSearchMemory({ key: memoryKey, found: payload.found, searches: payload.searches, usedUp: payload.usedUp });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Could not start the searches over");
+    }
+  }
 
   const contactedCount = useMemo(
     () => leads.filter((lead) => lead.email || lead.phone).length,
@@ -346,15 +480,41 @@ export default function Dashboard() {
   async function runScrape() {
     setActionError("");
     const normalizedQuery = query.trim().replace(/\s+/g, " ");
-    if (normalizedQuery.length < 3) {
+    if (leadSource !== "stores" && normalizedQuery.length < 3) {
       setActionError("Describe the businesses and location you want to find.");
       return;
     }
+    if (leadSource === "stores" && (!selectedTypes.length || !pendingLocations.length)) {
+      setActionError("Pick at least one store type and add a city.");
+      return;
+    }
+    if (
+      leadSource === "stores" &&
+      plan.budget * PLACES_COST_PER_REQUEST >= 3 &&
+      !window.confirm(
+        `This run can use up to ${plan.budget} Google Maps requests (≈ $${(plan.budget * PLACES_COST_PER_REQUEST).toFixed(2)}) and may take a while. Start it?`,
+      )
+    ) {
+      return;
+    }
+    if (autoOutreach && !window.confirm("Auto-call is on: every new lead with a phone number will get a real AI call when the run finishes. Continue?")) {
+      return;
+    }
+    if (pendingLocations.length !== locations.length) setLocations(pendingLocations);
+    setLocationDraft("");
     try {
       const response = await fetch("/api/scrape", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: normalizedQuery, limit: resultLimit, source: leadSource }),
+        body: JSON.stringify({
+          query: normalizedQuery,
+          limit: resultLimit,
+          source: leadSource,
+          storeTypes: selectedTypes.map((type) => type.key),
+          locations: pendingLocations,
+          zipRadius,
+          autoOutreach,
+        }),
       });
       const payload = (await response.json()) as { status?: JobStatus; error?: string };
       if (!response.ok) throw new Error(payload.error || "Could not start the scraper");
@@ -387,82 +547,208 @@ export default function Dashboard() {
             Lead Discovery
           </h1>
           <p className="mx-auto mt-4 max-w-[560px] text-[16px] leading-[1.65] text-muted">
-            Find and qualify high-value prospects instantly. Search by keyword, industry, or location.
+            Find independent supermarkets, dollar stores and other retailers to sell to — or search any business by keyword.
           </p>
         </section>
 
         <section className="mb-12 rounded-[20px] border border-line bg-white p-5 shadow-panel md:p-6">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-            <label
-              className="flex h-[58px] flex-1 items-center gap-[11px] rounded-xl border border-[#d8d6e2] bg-white px-4 transition-shadow focus-within:border-indigo focus-within:shadow-[0_0_0_4px_rgba(91,79,233,0.09)]"
-              data-tour="query"
-            >
-              <span className="flex-none text-[#a3a1b0]">
-                <SearchIcon />
-              </span>
-              <input
-                aria-label="Keywords"
-                className="w-full border-0 bg-transparent text-[15px] font-semibold text-ink outline-none placeholder:font-normal placeholder:text-[#aaa8b6]"
-                value={keywords}
-                onChange={(event) => setKeywords(event.target.value)}
-                placeholder="Keywords (e.g., Coffee shops)"
-                autoComplete="off"
-                disabled={isActive}
-              />
-            </label>
-            <label
-              className="flex h-[58px] flex-1 items-center gap-[11px] rounded-xl border border-[#d8d6e2] bg-white px-4 transition-shadow focus-within:border-indigo focus-within:shadow-[0_0_0_4px_rgba(91,79,233,0.09)]"
-              data-tour="location"
-            >
-              <span className="flex-none text-[#a3a1b0]">
-                <MapPinIcon />
-              </span>
-              <input
-                aria-label="Location"
-                className="w-full border-0 bg-transparent text-[15px] font-semibold text-ink outline-none placeholder:font-normal placeholder:text-[#aaa8b6]"
-                value={location}
-                onChange={(event) => setLocation(event.target.value)}
-                placeholder="Location (e.g., London)"
-                autoComplete="off"
-                disabled={isActive}
-              />
-            </label>
-            <button
-              type="button"
-              onClick={runScrape}
-              data-tour="run"
-              disabled={isActive || loading || query.trim().length < 3}
-              className="inline-flex h-[58px] flex-none items-center justify-center gap-2 whitespace-nowrap rounded-xl border border-indigo bg-indigo px-8 text-[14px] font-bold text-white shadow-button transition-transform hover:enabled:-translate-y-px hover:enabled:bg-indigo-dark disabled:opacity-60"
-            >
-              {isActive ? (
-                <span className="size-4 animate-spin-fast rounded-full border-2 border-white/35 border-t-white" />
-              ) : (
-                <SearchIcon />
-              )}
-              {isActive ? "Discovering…" : "Discover"}
-            </button>
-          </div>
+          {leadSource === "stores" ? (
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+                <div
+                  className="flex min-h-[58px] flex-1 flex-wrap items-center gap-2 rounded-xl border border-[#d8d6e2] bg-white px-4 py-2.5 transition-shadow focus-within:border-indigo focus-within:shadow-[0_0_0_4px_rgba(91,79,233,0.09)]"
+                  data-tour="location"
+                  onClick={() => locationInputRef.current?.focus()}
+                >
+                  <span className="flex-none text-[#a3a1b0]">
+                    <MapPinIcon />
+                  </span>
+                  {locations.map((place) => (
+                    <span
+                      key={place}
+                      className="inline-flex items-center gap-1 rounded-full bg-indigo-soft py-1 pr-1.5 pl-3 text-[12px] font-bold text-indigo"
+                    >
+                      {/^\d{5}$/.test(place) ? (
+                        <>
+                          ZIP {place}
+                          {zipLabels[place] && <span className="font-semibold opacity-75">· {zipLabels[place]}</span>}
+                        </>
+                      ) : (
+                        place
+                      )}
+                      <button
+                        type="button"
+                        aria-label={`Remove ${place}`}
+                        disabled={isActive}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setLocations((current) => current.filter((item) => item !== place));
+                        }}
+                        className="grid size-5 place-items-center rounded-full hover:bg-white/70"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  <input
+                    ref={locationInputRef}
+                    aria-label="Add a location"
+                    className="min-w-[180px] flex-1 border-0 bg-transparent text-[15px] font-semibold text-ink outline-none placeholder:font-normal placeholder:text-[#aaa8b6]"
+                    value={locationDraft}
+                    onChange={(event) => setLocationDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === ";") {
+                        event.preventDefault();
+                        addLocation(locationDraft);
+                      } else if (event.key === "Backspace" && !locationDraft && locations.length) {
+                        setLocations((current) => current.slice(0, -1));
+                      }
+                    }}
+                    onBlur={() => addLocation(locationDraft)}
+                    placeholder={
+                      checkingZip
+                        ? "Checking ZIP code…"
+                        : locations.length
+                          ? "Add another city or ZIP…"
+                          : "City or ZIP code, e.g. Edison, NJ or 08817 — press Enter to add"
+                    }
+                    autoComplete="off"
+                    disabled={isActive || locations.length >= MAX_LOCATIONS}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={runScrape}
+                  data-tour="run"
+                  disabled={isActive || loading || !canRun}
+                  className="inline-flex h-[58px] flex-none items-center justify-center gap-2 whitespace-nowrap rounded-xl border border-indigo bg-indigo px-8 text-[14px] font-bold text-white shadow-button transition-transform hover:enabled:-translate-y-px hover:enabled:bg-indigo-dark disabled:opacity-60"
+                >
+                  {isActive ? (
+                    <span className="size-4 animate-spin-fast rounded-full border-2 border-white/35 border-t-white" />
+                  ) : (
+                    <SearchIcon />
+                  )}
+                  {isActive ? "Finding stores…" : "Find stores"}
+                </button>
+              </div>
 
-          <div className="mt-5 flex flex-col gap-4 border-t border-[#e7e5ed] pt-5 sm:flex-row sm:items-center sm:justify-between">
+              <div data-tour="query">
+                <strong className="mb-2 block text-[10px] font-extrabold uppercase tracking-[0.1em] text-[#8a879a]">
+                  Store types
+                </strong>
+                <div className="flex flex-wrap gap-2" role="group" aria-label="Store types">
+                  {pickableTypes.map((type) => {
+                    const selected = storeTypes.includes(type.key);
+                    return (
+                      <button
+                        key={type.key}
+                        type="button"
+                        title={type.hint}
+                        aria-pressed={selected}
+                        disabled={isActive}
+                        onClick={() =>
+                          setStoreTypes((current) =>
+                            selected ? current.filter((key) => key !== type.key) : [...current, type.key],
+                          )
+                        }
+                        className={`rounded-full border px-3.5 py-2 text-[12px] font-bold transition-colors disabled:opacity-60 ${
+                          selected
+                            ? "border-indigo bg-indigo text-white"
+                            : "border-[#dcdbe5] bg-white text-[#3f3d4d] hover:enabled:border-indigo hover:enabled:text-indigo"
+                        }`}
+                      >
+                        {selected ? "✓ " : ""}
+                        {type.label}
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={() => setShowStoreTypes(true)}
+                    disabled={isActive}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-dashed border-[#c9c6d8] bg-white px-3.5 py-2 text-[12px] font-bold text-muted hover:enabled:border-indigo hover:enabled:text-indigo disabled:opacity-60"
+                  >
+                    + Add / remove types
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+              <label
+                className="flex h-[58px] flex-1 items-center gap-[11px] rounded-xl border border-[#d8d6e2] bg-white px-4 transition-shadow focus-within:border-indigo focus-within:shadow-[0_0_0_4px_rgba(91,79,233,0.09)]"
+                data-tour="query"
+              >
+                <span className="flex-none text-[#a3a1b0]">
+                  <SearchIcon />
+                </span>
+                <input
+                  aria-label="Keywords"
+                  className="w-full border-0 bg-transparent text-[15px] font-semibold text-ink outline-none placeholder:font-normal placeholder:text-[#aaa8b6]"
+                  value={keywords}
+                  onChange={(event) => setKeywords(event.target.value)}
+                  placeholder="Keywords (e.g., Coffee shops)"
+                  autoComplete="off"
+                  disabled={isActive}
+                />
+              </label>
+              <label
+                className="flex h-[58px] flex-1 items-center gap-[11px] rounded-xl border border-[#d8d6e2] bg-white px-4 transition-shadow focus-within:border-indigo focus-within:shadow-[0_0_0_4px_rgba(91,79,233,0.09)]"
+                data-tour="location"
+              >
+                <span className="flex-none text-[#a3a1b0]">
+                  <MapPinIcon />
+                </span>
+                <input
+                  aria-label="Location"
+                  className="w-full border-0 bg-transparent text-[15px] font-semibold text-ink outline-none placeholder:font-normal placeholder:text-[#aaa8b6]"
+                  value={location}
+                  onChange={(event) => setLocation(event.target.value)}
+                  placeholder="Location (e.g., London)"
+                  autoComplete="off"
+                  disabled={isActive}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={runScrape}
+                data-tour="run"
+                disabled={isActive || loading || !canRun}
+                className="inline-flex h-[58px] flex-none items-center justify-center gap-2 whitespace-nowrap rounded-xl border border-indigo bg-indigo px-8 text-[14px] font-bold text-white shadow-button transition-transform hover:enabled:-translate-y-px hover:enabled:bg-indigo-dark disabled:opacity-60"
+              >
+                {isActive ? (
+                  <span className="size-4 animate-spin-fast rounded-full border-2 border-white/35 border-t-white" />
+                ) : (
+                  <SearchIcon />
+                )}
+                {isActive ? "Discovering…" : "Discover"}
+              </button>
+            </div>
+          )}
+
+          <div className="mt-5 flex flex-col gap-4 border-t border-[#e7e5ed] pt-5 lg:flex-row lg:flex-wrap lg:items-center lg:justify-between">
             <div className="flex flex-wrap items-center gap-3" data-tour="source">
               <strong className="text-[10px] font-extrabold uppercase tracking-[0.1em] text-[#8a879a]">
                 Data source:
               </strong>
-              <div className="inline-flex gap-1.5 rounded-full bg-[#f3f2f8] p-1" role="group" aria-label="Lead source">
+              <div className="inline-flex flex-wrap gap-1.5 rounded-full bg-[#f3f2f8] p-1" role="group" aria-label="Lead source">
                 {([
-                  { value: "web", label: "Web Scraper", icon: <GlobeIcon /> },
+                  { value: "stores", label: "Store Finder", icon: <BuildingIcon /> },
                   { value: "maps", label: "Google Maps", icon: <MapPinIcon /> },
+                  { value: "web", label: "Web Scraper", icon: <GlobeIcon /> },
                 ] as const).map((option) => (
                   <button
                     key={option.value}
                     type="button"
-                    onClick={() => setLeadSource(option.value)}
+                    onClick={() => changeSource(option.value)}
                     disabled={isActive}
                     aria-pressed={leadSource === option.value}
                     title={
-                      option.value === "maps"
-                        ? "Google Maps also returns businesses with no website"
-                        : "Searches the open web and pulls contact details from each site"
+                      option.value === "stores"
+                        ? "Retail buyers by store type and city, from Google Maps — chains filtered out"
+                        : option.value === "maps"
+                          ? "Any business type from Google Maps, including ones with no website"
+                          : "Searches the open web and pulls contact details from each site"
                     }
                     className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[12px] font-bold transition-colors disabled:opacity-60 ${
                       leadSource === option.value
@@ -477,22 +763,117 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <label className="flex items-center gap-2.5" data-tour="limit">
-              <span className="text-[10px] font-extrabold uppercase tracking-[0.1em] text-[#8a879a]">Lead target:</span>
-              <select
-                value={resultLimit}
-                onChange={(event) => setResultLimit(Number(event.target.value))}
-                disabled={isActive}
-                className="h-[37px] min-w-[112px] rounded-[9px] border border-[#d8d6e2] bg-white px-2.5 text-[11px] font-bold text-[#464353] outline-none focus:border-indigo"
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+              {leadSource === "stores" && hasZip && (
+                <label className="flex items-center gap-2 text-[12px] font-bold text-[#464353]">
+                  Around each ZIP:
+                  <select
+                    value={zipRadius}
+                    onChange={(event) => setZipRadius(Number(event.target.value))}
+                    disabled={isActive}
+                    className="h-[33px] rounded-[9px] border border-[#d8d6e2] bg-white px-2 text-[11px] font-bold text-[#464353] outline-none focus:border-indigo"
+                  >
+                    <option value={0}>Only inside the ZIP</option>
+                    <option value={2}>Within 2 miles</option>
+                    <option value={5}>Within 5 miles</option>
+                    <option value={10}>Within 10 miles</option>
+                    <option value={25}>Within 25 miles</option>
+                  </select>
+                </label>
+              )}
+              <label
+                className="flex cursor-pointer items-center gap-2 text-[12px] font-bold text-[#464353]"
+                title="When on, every new lead with a phone number gets a real AI call (Retell) as soon as the run finishes"
               >
-                <option value={3}>3 leads</option>
-                <option value={5}>5 leads</option>
-                <option value={10}>10 leads</option>
-                <option value={15}>15 leads</option>
-                <option value={25}>25 leads</option>
-              </select>
-            </label>
+                <input
+                  type="checkbox"
+                  checked={autoOutreach}
+                  onChange={(event) => setAutoOutreach(event.target.checked)}
+                  disabled={isActive}
+                  className="size-4 accent-indigo"
+                />
+                Auto-call new leads
+              </label>
+
+              {erpnext && (
+                <Link
+                  href="/integrations"
+                  title={erpnext.connected ? erpnext.url : "Connect ERP to save leads there and skip ones you already have"}
+                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-bold no-underline ${
+                    erpnext.connected ? "bg-green-soft text-green" : "bg-[#f3f2f8] text-muted hover:text-indigo"
+                  }`}
+                >
+                  <span className="size-1.5 rounded-full bg-current" />
+                  {erpnext.connected
+                    ? [erpnext.skipExisting && "Skipping ERP duplicates", erpnext.saveLeads && "Saving to ERP"]
+                        .filter(Boolean)
+                        .join(" · ") || "ERP connected (sync off)"
+                    : "Connect ERP"}
+                </Link>
+              )}
+
+              <label className="flex items-center gap-2.5" data-tour="limit">
+                <span className="text-[10px] font-extrabold uppercase tracking-[0.1em] text-[#8a879a]">Lead target:</span>
+                <select
+                  value={resultLimit}
+                  onChange={(event) => setResultLimit(Number(event.target.value))}
+                  disabled={isActive}
+                  className="h-[37px] min-w-[112px] rounded-[9px] border border-[#d8d6e2] bg-white px-2.5 text-[11px] font-bold text-[#464353] outline-none focus:border-indigo"
+                >
+                  {(leadSource === "stores" ? [10, 25, 50, 100, 250, 500, 1000] : [3, 5, 10, 15, 25]).map((value) => (
+                    <option key={value} value={value}>
+                      {value} {leadSource === "stores" ? "stores" : "leads"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           </div>
+
+          {leadSource === "stores" && (
+            <p className="m-0 mt-3 text-[11px] text-muted">
+              {selectedTypes.length && pendingLocations.length
+                ? `${plan.searches} Google searches (${selectedTypes.length} type${selectedTypes.length === 1 ? "" : "s"} × ${
+                    pendingLocations.length
+                  } location${pendingLocations.length === 1 ? "" : "s"}) · up to ${plan.budget} requests (≈ $${(
+                    plan.budget * PLACES_COST_PER_REQUEST
+                  ).toFixed(2)} max)`
+                : "Pick store types and add at least one city."}
+              {!autoOutreach && " · Leads are saved for review — start calls from the CRM page."}
+            </p>
+          )}
+          {memoryHint && memoryHint.searches > 0 && (
+            <p className="m-0 mt-1.5 text-[11px] text-muted">
+              Continuing from earlier runs: {memoryHint.found.toLocaleString()} store{memoryHint.found === 1 ? "" : "s"} found
+              here before {memoryHint.found === 1 ? "is" : "are"} skipped and each search picks up where it stopped
+              {memoryHint.usedUp === memoryHint.searches &&
+                (hasZip
+                  ? " (the wide searches are used up — next runs search each ZIP in smaller areas)"
+                  : " (every search is used up — add more cities or store types, or start over)")}
+              .{" "}
+              <button
+                type="button"
+                onClick={startSearchesOver}
+                disabled={isActive}
+                className="border-0 bg-transparent p-0 text-[11px] font-bold text-indigo hover:enabled:underline disabled:opacity-60"
+              >
+                Start over
+              </button>
+            </p>
+          )}
+          {leadSource === "stores" && selectedTypes.length > 0 && pendingLocations.length > 0 && plan.likelyStores < resultLimit && (
+            <p className="m-0 mt-2 rounded-xl bg-[#fef4e6] px-3 py-2 text-[11px] leading-[1.5] text-[#8a520a]">
+              Google returns at most {plan.maxListings.toLocaleString()} listings for these searches — after removing chains and
+              duplicates expect roughly {plan.likelyStores.toLocaleString()} stores, short of {resultLimit.toLocaleString()}.
+              Add more cities/ZIPs or store types to reach your target.
+            </p>
+          )}
+          {leadSource === "stores" && resultLimit >= 250 && (
+            <p className="m-0 mt-2 text-[11px] text-muted">
+              Large runs take a while — reading each store&apos;s website for an email is the slow part (roughly{" "}
+              {Math.max(1, Math.round((resultLimit * 0.7 * 3.5) / 60))} min for {resultLimit.toLocaleString()} stores).
+            </p>
+          )}
         </section>
 
         {actionError && (
@@ -558,6 +939,13 @@ export default function Dashboard() {
               </label>
               <button
                 type="button"
+                onClick={() => setShowUpload(true)}
+                className="inline-flex h-[43px] flex-none items-center justify-center gap-2 whitespace-nowrap rounded-[11px] border border-[#dcdbe5] bg-white px-4 text-[12px] font-bold text-[#3f3d4d] hover:border-indigo hover:text-indigo"
+              >
+                <UploadIcon /> Import leads
+              </button>
+              <button
+                type="button"
                 onClick={exportCsv}
                 disabled={!visibleLeads.length}
                 className="inline-flex h-[43px] flex-none items-center justify-center gap-2 whitespace-nowrap rounded-[11px] border border-[#dcdbe5] bg-white px-4 text-[12px] font-bold text-[#3f3d4d] hover:enabled:border-indigo hover:enabled:text-indigo"
@@ -575,6 +963,7 @@ export default function Dashboard() {
                   lead={lead}
                   sendState={sendStates[leadKeyForClient(lead)]}
                   onOutreach={(channel) => void sendToOutreach(lead, channel)}
+                  erpConnected={Boolean(erpnext?.connected)}
                 />
               ))}
             </div>
@@ -591,7 +980,7 @@ export default function Dashboard() {
               <p className="m-0 text-[12px] text-muted">
                 {leads.length
                   ? "Try a broader search term."
-                  : "Describe your target market above and run your first search."}
+                  : "Describe your target market above and run your first search, or import a CSV/Excel file of leads."}
               </p>
             </div>
           )}
@@ -645,6 +1034,11 @@ export default function Dashboard() {
               </strong>
             </div>
             {status.error && <p className="mt-2.5 text-[11px] leading-[1.5] text-red">{status.error}</p>}
+            {!isActive && status.status === "completed" && status.notice && (
+              <p className="m-0 mt-3 rounded-xl bg-[#fef4e6] px-3 py-2 text-[11px] leading-[1.5] text-[#8a520a]" role="status">
+                {status.notice}
+              </p>
+            )}
             <div className="mt-[19px] flex items-center gap-[7px] text-[10px] text-[#9492a0]">
               <span className={`size-1.5 rounded-full ${isActive ? "animate-glow bg-indigo" : "bg-[#b1afbb]"}`} />
               {status.updatedAt
@@ -662,6 +1056,28 @@ export default function Dashboard() {
           </aside>
         </section>
       </div>
+      {showStoreTypes && (
+        <StoreTypesModal
+          types={storeCatalog}
+          onChange={(next) => {
+            setStoreCatalog(next);
+            // A newly added type is selected right away; removed ones drop out.
+            setStoreTypes((current) => {
+              const added = next.filter((type) => !type.hidden && !storeCatalog.some((old) => old.key === type.key));
+              const kept = current.filter((key) => next.some((type) => type.key === key && !type.hidden));
+              return [...kept, ...added.map((type) => type.key)];
+            });
+          }}
+          onClose={() => setShowStoreTypes(false)}
+        />
+      )}
+      {showUpload && (
+        <UploadLeadsModal
+          erpConnected={Boolean(erpnext?.connected)}
+          onClose={() => setShowUpload(false)}
+          onImported={() => void fetchState()}
+        />
+      )}
     </AppShell>
   );
 }

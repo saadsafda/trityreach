@@ -9,6 +9,7 @@ const TYPE_STYLES: Record<ActivityEventType, { dot: string; label: string }> = {
   lead_found: { dot: "bg-green", label: "Lead found" },
   webhook_sent: { dot: "bg-purple", label: "Webhook" },
   outreach_sent: { dot: "bg-purple", label: "Outreach" },
+  erpnext: { dot: "bg-blue", label: "ERP" },
   completed: { dot: "bg-green", label: "Completed" },
   failed: { dot: "bg-red", label: "Failed" },
 };
