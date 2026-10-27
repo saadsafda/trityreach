@@ -23,6 +23,9 @@ export const SEARCH_CONFIG_PATH = path.join(DATA_DIR, "search-config.json");
 export const CONVERSATIONS_PATH = path.join(DATA_DIR, "conversations.json");
 export const ACTIVITY_PATH = path.join(DATA_DIR, "activity.json");
 export const MANUAL_LEADS_PATH = path.join(DATA_DIR, "manual-leads.json");
+/** Leads found while ERPNext was offline, waiting to be saved there
+ * (written by scrape_leads.py, cleared as ERP takes them). */
+export const PENDING_ERP_PATH = path.join(DATA_DIR, "erp-pending.json");
 
 const MAX_CONVERSATION_ENTRIES = 2000;
 const MAX_ACTIVITY_EVENTS = 500;
@@ -155,10 +158,10 @@ export async function readScrapedLeads(): Promise<Lead[]> {
     .filter((lead) => Object.values(lead).some((value) => value.trim()));
 }
 
-export async function readManualLeads(): Promise<Lead[]> {
-  if (!(await exists(MANUAL_LEADS_PATH))) return [];
+async function readLeadList(filePath: string): Promise<Lead[]> {
+  if (!(await exists(filePath))) return [];
   try {
-    const raw = JSON.parse(await fs.readFile(MANUAL_LEADS_PATH, "utf8"));
+    const raw = JSON.parse(await fs.readFile(filePath, "utf8"));
     if (!Array.isArray(raw)) return [];
     return (raw as Record<string, unknown>[]).map(
       (record) =>
@@ -169,6 +172,25 @@ export async function readManualLeads(): Promise<Lead[]> {
   } catch {
     return [];
   }
+}
+
+export async function readManualLeads(): Promise<Lead[]> {
+  return readLeadList(MANUAL_LEADS_PATH);
+}
+
+export async function readPendingErpLeads(): Promise<Lead[]> {
+  return readLeadList(PENDING_ERP_PATH);
+}
+
+/** Drop leads ERPNext now has from the waiting list. */
+export async function removePendingErpLeads(isInErp: (lead: Lead) => boolean): Promise<void> {
+  await withAppendLock(PENDING_ERP_PATH, async () => {
+    const pending = await readPendingErpLeads();
+    const remaining = pending.filter((lead) => !isInErp(lead));
+    if (remaining.length !== pending.length) {
+      await writeTextAtomic(PENDING_ERP_PATH, JSON.stringify(remaining, null, 2));
+    }
+  });
 }
 
 export async function appendManualLead(lead: Lead): Promise<void> {
@@ -189,13 +211,14 @@ export async function appendManualLeads(leads: Lead[]): Promise<void> {
 }
 
 /** All leads the dashboard works with: scraped (leads.csv, rewritten by every
- * scrape) plus manually added ones (data/manual-leads.json, which scrapes
- * never touch). Deduplicated by email/phone key, scraped entries first. */
+ * scrape), manually added ones (data/manual-leads.json, which scrapes never
+ * touch), and earlier runs' leads still waiting for an offline ERPNext.
+ * Deduplicated by email/phone key, scraped entries first. */
 export async function readLeads(): Promise<Lead[]> {
-  const [scraped, manual] = await Promise.all([readScrapedLeads(), readManualLeads()]);
+  const [scraped, manual, pending] = await Promise.all([readScrapedLeads(), readManualLeads(), readPendingErpLeads()]);
   const seen = new Set<string>();
   const merged: Lead[] = [];
-  for (const lead of [...scraped, ...manual]) {
+  for (const lead of [...scraped, ...manual, ...pending]) {
     const key = leadKeyForClient(lead);
     if (key) {
       if (seen.has(key)) continue;

@@ -327,6 +327,11 @@ export default function UploadLeadsModal({
                   </div>
                 ))}
               </div>
+              {summary.erpWarning && (
+                <p className="mt-3 mb-0 rounded-xl bg-[#fef4e6] px-3 py-2 text-[12px] leading-[1.5] text-[#8a520a]" role="status">
+                  {summary.erpWarning}
+                </p>
+              )}
               {(summary.duplicatesInFile > 0 || summary.invalidCount > 0) && (
                 <p className="mt-3 mb-0 text-[12px] text-muted">
                   {summary.duplicatesInFile > 0 && `${summary.duplicatesInFile} row(s) repeated a lead already in the file. `}

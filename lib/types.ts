@@ -170,4 +170,6 @@ export type ImportSummary = {
   /** First 50 rows that failed validation, with the spreadsheet row number. */
   invalid: { row: number; business: string; reason: string }[];
   invalidCount: number;
+  /** Set when ERP couldn't be reached, so its duplicate check was skipped. */
+  erpWarning?: string;
 };

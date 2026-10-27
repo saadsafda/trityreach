@@ -31,12 +31,13 @@ export async function POST(request: Request) {
       (emailKey(lead.email) && emails.has(emailKey(lead.email))) || (phoneKey(lead.phone) && phones.has(phoneKey(lead.phone)));
     const config = body.skipErp === true ? await readErpConfig() : null;
     let erpIndex: Awaited<ReturnType<typeof fetchExistingIndex>> | null = null;
+    let erpWarning = "";
     if (config) {
       try {
         erpIndex = await fetchExistingIndex(config);
       } catch (error) {
-        const reason = error instanceof Error ? error.message : "Could not reach your ERP";
-        throw new Error(`${reason} — start your ERP, or untick “Skip leads already in ERP” to import without that check.`);
+        // Import anyway; only the ERP duplicate check is skipped.
+        erpWarning = `${error instanceof Error ? error.message : "Could not reach your ERP"} — imported without checking ERP for duplicates.`;
       }
     }
 
@@ -47,6 +48,7 @@ export async function POST(request: Request) {
       alreadyInErp: 0,
       invalid: [],
       invalidCount: 0,
+      ...(erpWarning ? { erpWarning } : {}),
     };
     const accepted: Lead[] = [];
 

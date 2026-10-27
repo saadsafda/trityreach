@@ -2863,6 +2863,11 @@ class ErpNextSync:
         self.records = 0
         # Leads/websites dropped this run because they were already in ERPNext.
         self.skipped = 0
+        # ERPNext couldn't be reached at the start of the run: the run goes on
+        # without it and new leads wait in PENDING_ERP_PATH.
+        self.offline = False
+        # Rows whose save failed this run (they wait in PENDING_ERP_PATH too).
+        self.failed_rows: list[dict[str, str]] = []
 
     @classmethod
     def from_env(cls) -> "ErpNextSync | None":
@@ -3054,6 +3059,7 @@ class ErpNextSync:
                 print(f"    ↳ Saved {label} to ERP as {name}", flush=True)
             except ValueError as exc:
                 failed.append(f"{label}: {exc}")
+                self.failed_rows.append(row)
                 print(f"    ⚠ ERP save failed for {label}: {exc}", flush=True)
         activity.log(
             "erpnext",
@@ -3063,13 +3069,79 @@ class ErpNextSync:
         return created
 
 
+# Leads found while ERPNext was offline (or whose save failed). The dashboard
+# keeps showing them (lib/storage.ts readLeads), the next run with ERPNext
+# reachable saves them, and "Sync to ERP" clears them too.
+PENDING_ERP_PATH = BASE_DIR / "data" / "erp-pending.json"
+
+
+def _pending_key(row: dict[str, str]) -> str:
+    return (row.get("email") or row.get("phone") or row.get("website") or row.get("business_name") or "").strip().lower()
+
+
+def read_pending_erp() -> list[dict[str, str]]:
+    try:
+        rows = json.loads(PENDING_ERP_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def write_pending_erp(rows: list[dict[str, str]]) -> None:
+    PENDING_ERP_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = PENDING_ERP_PATH.with_suffix(".json.tmp")
+    try:
+        temporary_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        temporary_path.replace(PENDING_ERP_PATH)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def add_pending_erp(rows: list[dict[str, str]]) -> None:
+    pending = read_pending_erp()
+    keys = {_pending_key(row) for row in pending}
+    for row in rows:
+        if _pending_key(row) and _pending_key(row) not in keys:
+            keys.add(_pending_key(row))
+            pending.append({field: str(row.get(field, "") or "") for field in CSV_FIELDS})
+    write_pending_erp(pending)
+
+
+def flush_pending_erp(erp: ErpNextSync, activity: "ActivityLogger") -> None:
+    """ERPNext is reachable again: save the leads that waited for it (ones it
+    meanwhile got some other way are just dropped from the list)."""
+    pending = read_pending_erp()
+    if not pending:
+        return
+    print(f"Saving {len(pending)} lead(s) that waited while ERP was offline...", flush=True)
+    still_waiting: list[dict[str, str]] = []
+    created = already = 0
+    for row in pending:
+        if erp.match(row):
+            already += 1
+            continue
+        try:
+            erp.create_lead(row)
+            created += 1
+        except ValueError:
+            still_waiting.append(row)
+    write_pending_erp(still_waiting)
+    activity.log(
+        "erpnext",
+        f"Saved {created} lead(s) that waited while ERP was offline",
+        detail=", ".join(
+            filter(None, [f"{already} were already there" if already else "", f"{len(still_waiting)} still waiting" if still_waiting else ""])
+        ) or "Nothing left waiting",
+    )
+
+
 def _skip_existing(
     erp: ErpNextSync | None,
     rows: list[dict[str, str]],
     activity: "ActivityLogger",
 ) -> list[dict[str, str]]:
     """Drop rows already in ERPNext, logging which and why."""
-    if erp is None or not rows:
+    if erp is None or erp.offline or not rows:
         return rows
     new_rows, existing = erp.split_existing(rows)
     erp.skipped += len(existing)
@@ -3279,11 +3351,27 @@ def _finish_run(
     # Save the new leads into the connected ERPNext before outreach starts, so
     # the ERP is the record of who was contacted.
     erp_note = ""
-    if erp is not None and erp.save_leads:
+    if erp is not None and erp.offline:
+        add_pending_erp(rows)
+        erp_note = f"; ERP offline — {len(rows)} kept to save there later"
+        progress.notice = " ".join(
+            filter(
+                None,
+                [
+                    progress.notice,
+                    "ERP was offline, so these leads weren't checked against it or saved there. They stay in the CRM "
+                    "and are saved to ERP automatically on the next run once it's back (or use Sync to ERP on the CRM page).",
+                ],
+            )
+        )
+    elif erp is not None and erp.save_leads:
         print(f"Saving {len(rows)} lead(s) to ERP...", flush=True)
         progress.update("enriching", message=f"Saving {len(rows)} lead(s) to ERP")
         saved = erp.save(rows, activity)
         erp_note = f"; {saved} saved to ERP"
+        if erp.failed_rows:
+            add_pending_erp(erp.failed_rows)
+            erp_note += f" ({len(erp.failed_rows)} kept to retry later)"
     if erp is not None and erp.skipped:
         erp_note += f"; {erp.skipped} already in ERP skipped"
 
@@ -3341,6 +3429,8 @@ def main() -> int:
         # When an ERPNext site is connected, index what it already holds so
         # duplicates are dropped before they cost scraping, enrichment, or an
         # outreach message.
+        # If ERPNext can't be reached the run still goes ahead without it:
+        # no ERP duplicate check, and new leads wait locally to be saved later.
         erp = ErpNextSync.from_env()
         if erp is not None and erp.skip_existing:
             progress.update("discovering", message="Checking existing leads in ERP")
@@ -3348,12 +3438,21 @@ def main() -> int:
             try:
                 count = erp.load_existing()
             except ValueError as exc:
-                raise ValueError(f"Could not load existing leads from ERP: {exc}") from exc
-            activity.log(
-                "erpnext",
-                f"Loaded {count} existing record(s) from ERP",
-                detail="Leads already there will be skipped",
-            )
+                erp.offline = True
+                print(f"    ⚠ ERP is offline, continuing without it: {exc}", flush=True)
+                activity.log(
+                    "erpnext",
+                    "ERP is offline — searching without it",
+                    detail="No ERP duplicate check this run; new leads are kept and saved to ERP once it's back",
+                )
+            else:
+                activity.log(
+                    "erpnext",
+                    f"Loaded {count} existing record(s) from ERP",
+                    detail="Leads already there will be skipped",
+                )
+        if erp is not None and not erp.offline and erp.save_leads:
+            flush_pending_erp(erp, activity)
 
         # Store Finder: Google Maps across store types × locations, chains and
         # ERPNext duplicates already filtered out, then the shared tail.

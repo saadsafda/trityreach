@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createErpLead, existingMatch, fetchExistingIndex, readErpConfig, rememberLead } from "@/lib/erpnext";
-import { appendActivityEvent, readLeads } from "@/lib/storage";
+import { appendActivityEvent, readLeads, removePendingErpLeads } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,6 +39,9 @@ export async function POST() {
         });
       }
     }
+
+    // Everything ERPNext now has stops waiting (rememberLead added the new ones).
+    await removePendingErpLeads((lead) => Boolean(existingMatch(index, lead)));
 
     await appendActivityEvent({
       id: crypto.randomUUID(),

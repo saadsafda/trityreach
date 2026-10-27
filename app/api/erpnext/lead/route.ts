@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import { createErpLead, existingMatch, fetchExistingIndex, readErpConfig } from "@/lib/erpnext";
-import { appendActivityEvent } from "@/lib/storage";
+import { appendActivityEvent, removePendingErpLeads } from "@/lib/storage";
 import { LEAD_FIELDS, type Lead } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+function sameLead(a: Lead, b: Lead): boolean {
+  return LEAD_FIELDS.every((field) => (a[field] ?? "").trim() === (b[field] ?? "").trim());
+}
 
 /** POST { lead } → creates that one lead in ERPNext, unless ERPNext already
  * has it (same email, phone, website, or name in the same city).
@@ -30,10 +34,15 @@ export async function POST(request: Request) {
   }
 
   try {
-    const reason = existingMatch(await fetchExistingIndex(config), lead);
-    if (reason) return NextResponse.json({ status: "exists", reason });
+    const index = await fetchExistingIndex(config);
+    const reason = existingMatch(index, lead);
+    if (reason) {
+      await removePendingErpLeads((other) => sameLead(other, lead));
+      return NextResponse.json({ status: "exists", reason });
+    }
 
     const name = await createErpLead(config, lead);
+    await removePendingErpLeads((other) => sameLead(other, lead));
     await appendActivityEvent({
       id: crypto.randomUUID(),
       type: "erpnext",
