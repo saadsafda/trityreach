@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parse } from "csv-parse/sync";
+import { listSavedLeads, queryLeadPage, saveLeads, withSavedRecords, type LeadPageQuery } from "@/lib/lead-db";
 import { leadKeyForClient } from "@/lib/lead-key";
 import { DEFAULT_STORE_TYPES } from "@/lib/store-types";
 import {
@@ -9,7 +10,9 @@ import {
   JobStatus,
   LEAD_FIELDS,
   Lead,
+  LeadPage,
   ConversationEntry,
+  SavedLead,
   SearchPreferences,
 } from "@/lib/types";
 
@@ -199,6 +202,7 @@ export async function appendManualLead(lead: Lead): Promise<void> {
     existing.push(lead);
     await writeTextAtomic(MANUAL_LEADS_PATH, JSON.stringify(existing, null, 2));
   });
+  saveLeads([lead], "manual");
 }
 
 /** Append many manual leads in one write (file uploads). */
@@ -208,6 +212,7 @@ export async function appendManualLeads(leads: Lead[]): Promise<void> {
     const existing = await readManualLeads();
     await writeTextAtomic(MANUAL_LEADS_PATH, JSON.stringify([...existing, ...leads], null, 2));
   });
+  saveLeads(leads, "import");
 }
 
 /** All leads the dashboard works with: scraped (leads.csv, rewritten by every
@@ -246,6 +251,19 @@ export async function readStatus(): Promise<JobStatus> {
 
 export async function writeStatus(status: JobStatus): Promise<void> {
   await writeTextAtomic(STATUS_PATH, JSON.stringify(status, null, 2));
+}
+
+/** Every lead in the CRM's database, newest first (the current working set is
+ * saved first, in case it hasn't reached the database yet). */
+export async function readSavedLeads(): Promise<SavedLead[]> {
+  withSavedRecords(await readLeads());
+  return listSavedLeads();
+}
+
+/** One page of the CRM's table. */
+export async function readLeadPage(query: LeadPageQuery): Promise<LeadPage> {
+  withSavedRecords(await readLeads());
+  return queryLeadPage(query);
 }
 
 export function isProcessRunning(pid?: number): boolean {
@@ -287,7 +305,7 @@ export async function readDashboardState(): Promise<Omit<DashboardState, "erpnex
     await writeStatus(status);
   }
 
-  return { search, leads, status };
+  return { search, leads: withSavedRecords(leads), status };
 }
 
 export { leadKeyForClient as leadKeyFor } from "@/lib/lead-key";

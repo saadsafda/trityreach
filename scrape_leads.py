@@ -3069,6 +3069,100 @@ class ErpNextSync:
         return created
 
 
+# Every lead ever found, which the CRM lists (leads.csv only holds the latest
+# run). The dashboard reads and writes it too: keep the schema and the keys in
+# step with lib/lead-db.ts.
+LEAD_DB_PATH = BASE_DIR / "data" / "leads.db"
+LEAD_DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS leads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    business_name TEXT NOT NULL DEFAULT '',
+    contact_name TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    website TEXT NOT NULL DEFAULT '',
+    city TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
+    store_type TEXT NOT NULL DEFAULT '',
+    lat TEXT NOT NULL DEFAULT '',
+    lng TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT 'search',
+    email_key TEXT NOT NULL DEFAULT '',
+    phone_key TEXT NOT NULL DEFAULT '',
+    other_key TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS leads_email_key ON leads (email_key);
+CREATE INDEX IF NOT EXISTS leads_phone_key ON leads (phone_key);
+CREATE INDEX IF NOT EXISTS leads_other_key ON leads (other_key);
+CREATE TABLE IF NOT EXISTS lead_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id INTEGER NOT NULL REFERENCES leads (id),
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS lead_notes_lead ON lead_notes (lead_id);
+"""
+
+
+def _lead_db_keys(row: dict[str, str]) -> tuple[str, str, str]:
+    """(email, phone digits, other). A lead with neither email nor phone only
+    matches another with neither, because branches often share one website."""
+    email = str(row.get("email") or "").strip().lower()
+    digits = re.sub(r"\D", "", str(row.get("phone") or ""))[-10:]
+    phone = digits if len(digits) >= 7 else ""
+    if email or phone:
+        return email, phone, ""
+    website = re.sub(r"^https?://", "", str(row.get("website") or "").strip().lower())
+    website = re.sub(r"^www\.", "", website).rstrip("/")
+    name = str(row.get("business_name") or "").strip().lower()
+    city = str(row.get("city") or "").strip().lower()
+    return email, phone, website or (f"{name}|{city}" if name else "")
+
+
+def save_leads_to_db(rows: list[dict[str, str]]) -> None:
+    """Add new leads and fill the blanks of ones already saved. Never fatal:
+    the run's leads are still in leads.csv if this fails."""
+    now = datetime.now(UTC).isoformat()
+    try:
+        LEAD_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(LEAD_DB_PATH, timeout=10)
+        try:
+            db.row_factory = sqlite3.Row
+            db.executescript(LEAD_DB_SCHEMA)
+            with db:
+                for row in rows:
+                    email, phone, other = _lead_db_keys(row)
+                    existing = None
+                    for column, value in (("email_key", email), ("phone_key", phone), ("other_key", other)):
+                        if value and existing is None:
+                            existing = db.execute(
+                                f"SELECT * FROM leads WHERE {column} = ? ORDER BY id LIMIT 1", (value,)
+                            ).fetchone()
+                    values = {field: str(row.get(field, "") or "").strip() for field in CSV_FIELDS}
+                    if existing is None:
+                        if not (email or phone or other):
+                            continue
+                        db.execute(
+                            f"INSERT INTO leads ({', '.join(CSV_FIELDS)}, origin, email_key, phone_key, other_key, created_at, updated_at) "
+                            f"VALUES ({', '.join('?' for _ in CSV_FIELDS)}, 'search', ?, ?, ?, ?, ?)",
+                            (*values.values(), email, phone, other, now, now),
+                        )
+                        continue
+                    merged = {field: existing[field] if str(existing[field]).strip() else values[field] for field in CSV_FIELDS}
+                    if any(merged[field] != existing[field] for field in CSV_FIELDS):
+                        db.execute(
+                            f"UPDATE leads SET {', '.join(f'{field} = ?' for field in CSV_FIELDS)}, "
+                            "email_key = ?, phone_key = ?, other_key = ?, updated_at = ? WHERE id = ?",
+                            (*merged.values(), *_lead_db_keys(merged), now, existing["id"]),
+                        )
+        finally:
+            db.close()
+    except sqlite3.Error as exc:
+        print(f"    ⚠ Could not save leads to the CRM database: {exc}", flush=True)
+
+
 # Leads found while ERPNext was offline (or whose save failed). The dashboard
 # keeps showing them (lib/storage.ts readLeads), the next run with ERPNext
 # reachable saves them, and "Sync to ERP" clears them too.
@@ -3347,6 +3441,7 @@ def _finish_run(
         return
 
     write_csv(args.output, rows)
+    save_leads_to_db(rows)
 
     # Save the new leads into the connected ERPNext before outreach starts, so
     # the ERP is the record of who was contacted.

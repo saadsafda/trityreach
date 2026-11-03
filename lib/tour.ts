@@ -169,7 +169,7 @@ const CRM_STEPS: AuthoredStep[] = [
     popover: {
       title: "Anatomy of a lead",
       description:
-        "Each row shows where the lead came from, its status (<b>New</b> → <b>Contacted</b> → <b>Interested</b> once they reply), and which channels have been used. Click the row to open the full conversation.",
+        "Each row shows the lead's contact details, its status (<b>New</b> → <b>Contacted</b> → <b>Interested</b> once they reply), which channels have been used, and when and how it was added. Click the row to open its notes and full conversation.",
       side: "bottom",
     },
   },
@@ -185,9 +185,9 @@ const CRM_STEPS: AuthoredStep[] = [
   {
     element: '[data-tour="call-all"]',
     popover: {
-      title: "Call everyone at once",
+      title: "Call your latest leads",
       description:
-        "Places a real AI call to every lead with a phone number. You'll get a confirmation prompt with the count first — these are live calls.",
+        "Places a real AI call to the leads from your latest search and the ones you added by hand, not your whole history. You'll get a confirmation prompt with the count first — these are live calls.",
       side: "bottom",
       align: "end",
     },

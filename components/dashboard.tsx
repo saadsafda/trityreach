@@ -10,6 +10,7 @@ import {
   FilterIcon,
   GlobeIcon,
   MapPinIcon,
+  NoteIcon,
   PhoneIcon,
   SearchIcon,
   SparkIcon,
@@ -23,7 +24,9 @@ import UploadLeadsModal from "@/components/upload-leads-modal";
 import type { SearchMemorySummary } from "@/lib/store-search-memory";
 import { DEFAULT_STORE_TYPES, PLACES_COST_PER_REQUEST, storeSearchPlan } from "@/lib/store-types";
 import { useStoreCatalog } from "@/lib/use-store-catalog";
-import type { ActivityEvent, DashboardState, ErpNextStatus, JobStatus, Lead, LeadField, LeadSource } from "@/lib/types";
+import { LeadNotesModal } from "@/components/lead-notes";
+import { LEAD_FIELDS } from "@/lib/types";
+import type { ActivityEvent, DashboardState, ErpNextStatus, JobStatus, Lead, LeadField, LeadSource, SavedLead } from "@/lib/types";
 
 const CSV_COLUMNS: { key: LeadField; label: string }[] = [
   { key: "business_name", label: "Business" },
@@ -120,11 +123,13 @@ function LeadCard({
   sendState,
   onOutreach,
   erpConnected,
+  onNotes,
 }: {
-  lead: Lead;
+  lead: SavedLead;
   sendState?: { channel: "call" | "email"; state: "sending" | "sent" | "error" };
   onOutreach: (channel: "call" | "email") => void;
   erpConnected: boolean;
+  onNotes: () => void;
 }) {
   const initial = (lead.business_name || "?").charAt(0).toUpperCase();
   const hasContact = Boolean(lead.email || lead.phone);
@@ -218,6 +223,25 @@ function LeadCard({
         </div>
       </dl>
 
+      {lead.id > 0 && (
+        <button
+          type="button"
+          onClick={onNotes}
+          title={lead.latestNote || "Add a note to this lead"}
+          className={`mb-2 flex h-[38px] w-full items-center gap-1.5 rounded-[11px] border px-3 text-left text-[12px] font-bold transition-colors ${
+            lead.noteCount
+              ? "border-indigo/25 bg-indigo-soft text-indigo"
+              : "border-[#dcdbe5] bg-white text-[#3f3d4d] hover:border-indigo hover:text-indigo"
+          }`}
+        >
+          <span className="flex-none">
+            <NoteIcon />
+          </span>
+          <span className="flex-none">{lead.noteCount ? `Notes (${lead.noteCount})` : "Add note"}</span>
+          {lead.latestNote && <span className="min-w-0 truncate font-normal">· {lead.latestNote}</span>}
+        </button>
+      )}
+
       <div className="mt-auto flex gap-2" data-tour="card-actions">
         {(
           [
@@ -289,7 +313,8 @@ export default function Dashboard() {
   const [checkingZip, setCheckingZip] = useState(false);
   /** What earlier Store Finder runs covered in the chosen locations. */
   const [searchMemory, setSearchMemory] = useState<(SearchMemorySummary & { key: string }) | null>(null);
-  const [leads, setLeads] = useState<Lead[]>([]);
+  const [leads, setLeads] = useState<SavedLead[]>([]);
+  const [notesLeadId, setNotesLeadId] = useState<number | null>(null);
   const [status, setStatus] = useState<JobStatus>(DEFAULT_STATUS);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [search, setSearch] = useState("");
@@ -454,7 +479,10 @@ export default function Dashboard() {
 
   const visibleLeads = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return leads.filter((lead) => !needle || Object.values(lead).some((value) => value.toLowerCase().includes(needle)));
+    return leads.filter(
+      (lead) =>
+        !needle || [...LEAD_FIELDS.map((field) => lead[field]), lead.latestNote].some((value) => value.toLowerCase().includes(needle)),
+    );
   }, [leads, search]);
 
   async function sendToOutreach(lead: Lead, channel: OutreachChannel) {
@@ -964,6 +992,7 @@ export default function Dashboard() {
                   sendState={sendStates[leadKeyForClient(lead)]}
                   onOutreach={(channel) => void sendToOutreach(lead, channel)}
                   erpConnected={Boolean(erpnext?.connected)}
+                  onNotes={() => setNotesLeadId(lead.id)}
                 />
               ))}
             </div>
@@ -1069,6 +1098,14 @@ export default function Dashboard() {
             });
           }}
           onClose={() => setShowStoreTypes(false)}
+        />
+      )}
+      {notesLeadId !== null && (
+        <LeadNotesModal
+          leadId={notesLeadId}
+          title={leads.find((lead) => lead.id === notesLeadId)?.business_name || "This lead"}
+          onClose={() => setNotesLeadId(null)}
+          onChanged={() => void fetchState()}
         />
       )}
       {showUpload && (

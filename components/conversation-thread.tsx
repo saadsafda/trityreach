@@ -30,6 +30,7 @@ export default function ConversationThread({
   onClose,
   onSend,
   sendState,
+  notes,
 }: {
   lead: Lead;
   entries: ConversationEntry[];
@@ -38,6 +39,8 @@ export default function ConversationThread({
    * Omit to hide the outreach buttons. */
   onSend?: (channel: "call" | "email") => void;
   sendState?: { channel: string; state: "sending" | "sent" | "error" };
+  /** Shown above the conversation. */
+  notes?: React.ReactNode;
 }) {
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
@@ -104,6 +107,12 @@ export default function ConversationThread({
         </div>
 
         <div className="flex-1 overflow-y-auto px-6 py-5">
+          {notes && (
+            <div className="mb-6 border-b border-line pb-6">
+              <h3 className="m-0 mb-3 text-[11px] font-extrabold uppercase tracking-[0.09em] text-muted">Notes</h3>
+              {notes}
+            </div>
+          )}
           <h3 className="m-0 mb-4 text-[11px] font-extrabold uppercase tracking-[0.09em] text-muted">Conversation thread</h3>
           {ordered.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-line py-14 text-center">

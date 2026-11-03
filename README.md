@@ -170,7 +170,14 @@ The Next.js dashboard is a 2-page app built with Tailwind CSS:
   OpenStreetMap Nominatim at 1 request/second, cached in
   `data/geocode-cache.json`.
 
-Both pages poll the same on-disk state (`leads.csv`, `data/*.json`) that
+Every lead from every source is also kept in `data/leads.db` (SQLite), along
+with the notes on it. `leads.csv` only holds the latest run, so Discovery shows
+that run while the CRM lists the whole database. **Import from ERP** on the CRM
+page copies existing ERPNext Leads in; it only reads from ERPNext. **Call latest
+leads** deliberately covers the latest run and hand-added leads, not the whole
+database.
+
+Both pages poll the same on-disk state (`leads.csv`, `data/*`) that
 `scrape_leads.py` and the n8n workflow write to — nothing on either page is
 mock data.
 

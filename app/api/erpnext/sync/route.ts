@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { createErpLead, existingMatch, fetchExistingIndex, readErpConfig, rememberLead } from "@/lib/erpnext";
-import { appendActivityEvent, readLeads, removePendingErpLeads } from "@/lib/storage";
+import { appendActivityEvent, readSavedLeads, removePendingErpLeads } from "@/lib/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Pushes every dashboard lead (scraped + manual) that isn't in ERPNext yet.
+/** Pushes every lead in the CRM's database that isn't in ERPNext yet.
  * Safe to click repeatedly: anything already there is skipped. */
 export async function POST() {
   const config = await readErpConfig();
@@ -14,7 +14,7 @@ export async function POST() {
   }
 
   try {
-    const [leads, index] = await Promise.all([readLeads(), fetchExistingIndex(config)]);
+    const [leads, index] = await Promise.all([readSavedLeads(), fetchExistingIndex(config)]);
     let created = 0;
     let skipped = 0;
     const failed: { business: string; error: string }[] = [];

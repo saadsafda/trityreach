@@ -17,6 +17,39 @@ export type LeadField = (typeof LEAD_FIELDS)[number];
 
 export type Lead = Record<LeadField, string>;
 
+/** How a lead first reached the CRM's database. */
+export type LeadOrigin = "search" | "manual" | "import" | "erp";
+
+/** A lead as stored in the CRM's database (lib/lead-db.ts). */
+export type SavedLead = Lead & {
+  id: number;
+  origin: LeadOrigin;
+  savedAt: string;
+  noteCount: number;
+  latestNote: string;
+};
+
+/** One page of the CRM's table. */
+export type LeadPage = {
+  leads: SavedLead[];
+  /** Leads matching the search and filters. */
+  total: number;
+  /** Every saved lead, whatever the filters. */
+  allTotal: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  /** Every store type in the database, for the filter. */
+  storeTypes: string[];
+};
+
+export type LeadNote = {
+  id: number;
+  leadId: number;
+  body: string;
+  createdAt: string;
+};
+
 export type JobState =
   | "idle"
   | "queued"
@@ -76,7 +109,9 @@ export type ErpNextStatus = {
 
 export type DashboardState = {
   search: SearchPreferences;
-  leads: Lead[];
+  /** The working set: latest run, hand-added leads, leads waiting for ERP.
+   * The CRM lists every saved lead instead (GET /api/leads). */
+  leads: SavedLead[];
   status: JobStatus;
   erpnext: ErpNextStatus;
 };

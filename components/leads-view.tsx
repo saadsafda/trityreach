@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AddLeadModal from "@/components/add-lead-modal";
+import LeadNotes from "@/components/lead-notes";
 import SendToErpButton from "@/components/send-to-erp-button";
 import UploadLeadsModal from "@/components/upload-leads-modal";
 import ChannelStatus from "@/components/channel-status";
@@ -10,8 +11,7 @@ import {
   ChevronRightIcon,
   DownloadIcon,
   EmailIcon,
-  GlobeIcon,
-  MapPinIcon,
+  NoteIcon,
   PhoneIcon,
   PlusIcon,
   RefreshIcon,
@@ -20,7 +20,7 @@ import {
 } from "@/components/icons";
 import AppShell from "@/components/app-shell";
 import { leadKeyForClient } from "@/lib/lead-key";
-import type { ConversationEntry, DashboardState, ErpNextStatus, Lead } from "@/lib/types";
+import type { ConversationEntry, DashboardState, ErpNextStatus, Lead, LeadOrigin, LeadPage, SavedLead } from "@/lib/types";
 
 type SendState = "sending" | "sent" | "error";
 type OutreachChannel = "call" | "email";
@@ -41,22 +41,60 @@ function deriveLeadStatus(entries: ConversationEntry[]): LeadStatus {
   return "new";
 }
 
-/** Heuristic from existing lead data — TrityReach doesn't persist a source tag per lead.
- * Google Maps is the only source that returns businesses with no website. */
-function deriveLeadSource(lead: Lead): { label: string; icon: React.ReactNode } {
-  return lead.website
-    ? { label: "Web Lead", icon: <GlobeIcon /> }
-    : { label: "Google Maps", icon: <MapPinIcon /> };
+const ORIGIN_LABELS: Record<LeadOrigin, string> = {
+  search: "Search",
+  manual: "Added by hand",
+  import: "File import",
+  erp: "From ERP",
+};
+
+const PAGE_SIZES = [10, 25, 50, 100];
+const STICKY_HEADER_SPACE = 92;
+
+function formatDate(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** "1 … 4 5 6 … 20": the first, last, and neighbouring pages. */
+function pageButtons(page: number, pageCount: number): (number | "gap")[] {
+  const wanted = [...new Set([1, page - 1, page, page + 1, pageCount])]
+    .filter((value) => value >= 1 && value <= pageCount)
+    .sort((a, b) => a - b);
+  const buttons: (number | "gap")[] = [];
+  for (const value of wanted) {
+    const previous = buttons[buttons.length - 1];
+    if (typeof previous === "number" && value - previous === 2) buttons.push(previous + 1);
+    else if (typeof previous === "number" && value - previous > 2) buttons.push("gap");
+    buttons.push(value);
+  }
+  return buttons;
 }
 
 export default function LeadsView() {
-  const [leads, setLeads] = useState<Lead[]>([]);
+  /** The page of saved leads on screen. */
+  const [leads, setLeads] = useState<SavedLead[]>([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [leadPage, setLeadPage] = useState<Omit<LeadPage, "leads"> | null>(null);
+  /** The search box as sent to the server, a moment after typing stops. */
+  const [appliedSearch, setAppliedSearch] = useState("");
+  /** Which query the rows on screen answer, to dim them until the new page arrives. */
+  const [loadedQuery, setLoadedQuery] = useState("");
+  const latestRequest = useRef(0);
+  const tableTop = useRef<HTMLElement>(null);
+  const scrollWhenLoaded = useRef(false);
+  /** The latest run plus hand-added leads: what "Call latest leads" calls. */
+  const [latestLeads, setLatestLeads] = useState<Lead[]>([]);
+  const [importingErp, setImportingErp] = useState(false);
   const [conversations, setConversations] = useState<ConversationEntry[]>([]);
   const [search, setSearch] = useState("");
   const [channelFilter, setChannelFilter] = useState<"all" | "whatsapp" | "email" | "call" | "none">("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [selectedLeadKey, setSelectedLeadKey] = useState<string | null>(null);
+  const [selectedLead, setSelectedLead] = useState<SavedLead | null>(null);
   const [sendStates, setSendStates] = useState<Record<string, LeadSendState>>({});
   const [sendingAll, setSendingAll] = useState(false);
   const [showAddLead, setShowAddLead] = useState(false);
@@ -66,15 +104,38 @@ export default function LeadsView() {
   const [syncingErp, setSyncingErp] = useState(false);
   const [syncNotice, setSyncNotice] = useState("");
 
+  const queryString = useMemo(
+    () =>
+      new URLSearchParams({
+        page: String(page),
+        pageSize: String(pageSize),
+        search: appliedSearch,
+        storeType: storeTypeFilter === "all" ? "" : storeTypeFilter,
+        channel: channelFilter,
+      }).toString(),
+    [page, pageSize, appliedSearch, storeTypeFilter, channelFilter],
+  );
+
   const fetchData = useCallback(async () => {
+    const request = ++latestRequest.current;
     try {
-      const [stateResponse, conversationsResponse] = await Promise.all([
+      const [stateResponse, leadsResponse, conversationsResponse] = await Promise.all([
         fetch("/api/state", { cache: "no-store" }),
+        fetch(`/api/leads?${queryString}`, { cache: "no-store" }),
         fetch("/api/conversations", { cache: "no-store" }),
       ]);
+      // A newer request (another page or filter) has taken over.
+      if (request !== latestRequest.current) return;
       const statePayload = (await stateResponse.json()) as DashboardState & { error?: string };
       if (!stateResponse.ok) throw new Error(statePayload.error || "Could not load leads");
-      setLeads(statePayload.leads);
+      const leadsPayload = (await leadsResponse.json()) as LeadPage & { error?: string };
+      if (!leadsResponse.ok) throw new Error(leadsPayload.error || "Could not load leads");
+      setLeads(leadsPayload.leads);
+      setLeadPage(leadsPayload);
+      setLoadedQuery(queryString);
+      // The list shrank under this page (filter, fewer results): go to its last page.
+      if (leadsPayload.page !== page) setPage(leadsPayload.page);
+      setLatestLeads(statePayload.leads);
       setErpnext(statePayload.erpnext);
 
       if (conversationsResponse.ok) {
@@ -84,9 +145,19 @@ export default function LeadsView() {
     } catch (fetchError) {
       setError(fetchError instanceof Error ? fetchError.message : "Could not load leads");
     } finally {
-      setLoading(false);
+      if (request === latestRequest.current) setLoading(false);
     }
-  }, []);
+  }, [queryString, page]);
+
+  useEffect(() => {
+    const next = search.trim();
+    if (next === appliedSearch) return;
+    const timer = window.setTimeout(() => {
+      setAppliedSearch(next);
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [search, appliedSearch]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void fetchData(), 0);
@@ -107,28 +178,33 @@ export default function LeadsView() {
     return map;
   }, [conversations]);
 
-  const visibleLeads = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    return leads.filter((lead) => {
-      const matchesSearch = !needle || Object.values(lead).some((value) => value.toLowerCase().includes(needle));
-      if (!matchesSearch) return false;
-      if (storeTypeFilter !== "all" && (lead.store_type || "") !== storeTypeFilter) return false;
-      if (channelFilter === "all") return true;
-      const entries = conversationsByLead.get(leadKeyForClient(lead)) ?? [];
-      if (channelFilter === "none") return entries.length === 0;
-      return entries.some((entry) => entry.channel === channelFilter);
-    });
-  }, [leads, search, channelFilter, storeTypeFilter, conversationsByLead]);
+  const total = leadPage?.total ?? 0;
+  const allTotal = leadPage?.allTotal ?? 0;
+  const pageCount = leadPage?.pageCount ?? 1;
+  const storeTypeOptions = leadPage?.storeTypes ?? [];
+  const firstRow = total ? ((leadPage?.page ?? 1) - 1) * (leadPage?.pageSize ?? pageSize) + 1 : 0;
+  const lastRow = total ? firstRow + leads.length - 1 : 0;
 
-  const storeTypeOptions = useMemo(
-    () => [...new Set(leads.map((lead) => lead.store_type).filter(Boolean))].sort(),
-    [leads],
-  );
+  function goToPage(next: number) {
+    setPage(next);
+    scrollWhenLoaded.current = true;
+  }
 
-  const selectedLead = useMemo(
-    () => leads.find((lead) => leadKeyForClient(lead) === selectedLeadKey) ?? null,
-    [leads, selectedLeadKey],
-  );
+  // Back to the top of the table, clear of the sticky page header. This waits
+  // for the new rows: a shorter page arriving mid-scroll cancels the scroll.
+  useEffect(() => {
+    if (!scrollWhenLoaded.current || loadedQuery !== queryString) return;
+    scrollWhenLoaded.current = false;
+    const top = tableTop.current?.getBoundingClientRect().top;
+    if (top !== undefined && top < STICKY_HEADER_SPACE) {
+      window.scrollBy({ top: top - STICKY_HEADER_SPACE, behavior: "smooth" });
+    }
+  }, [loadedQuery, queryString]);
+
+  /** Stays open with its latest data, even if the row leaves this page meanwhile. */
+  const openLead = selectedLead ? (leads.find((lead) => lead.id === selectedLead.id) ?? selectedLead) : null;
+  /** Empty for a lead with no email or phone: nothing to log or send. */
+  const selectedLeadKey = openLead ? leadKeyForClient(openLead) : "";
   const selectedEntries = selectedLeadKey ? conversationsByLead.get(selectedLeadKey) ?? [] : [];
 
   const sendToOutreach = useCallback(async (leadKey: string, channel: OutreachChannel) => {
@@ -150,9 +226,9 @@ export default function LeadsView() {
   }, []);
 
   async function callAllLeads() {
-    const callable = leads.filter((lead) => lead.phone).length;
+    const callable = latestLeads.filter((lead) => lead.phone).length;
     const confirmed = window.confirm(
-      `Place a real AI phone call to all ${callable} lead(s) with a phone number? The Retell agent will call each business.`,
+      `Place a real AI phone call to the ${callable} lead(s) with a phone number from your latest search and the ones added by hand? Older leads are not called. The Retell agent will call each business.`,
     );
     if (!confirmed) return;
     setError("");
@@ -167,7 +243,7 @@ export default function LeadsView() {
       if (!response.ok) throw new Error(payload.error || "Could not start the calls");
       setSendStates((current) => {
         const next = { ...current };
-        for (const lead of leads) {
+        for (const lead of latestLeads) {
           const key = leadKeyForClient(lead);
           if (key && lead.phone) {
             const state: SendState = payload.failed?.includes(lead.business_name || lead.website || "lead")
@@ -182,6 +258,25 @@ export default function LeadsView() {
       setError(sendError instanceof Error ? sendError.message : "Could not start the calls");
     } finally {
       setSendingAll(false);
+    }
+  }
+
+  async function importFromErp() {
+    setError("");
+    setSyncNotice("");
+    setImportingErp(true);
+    try {
+      const response = await fetch("/api/leads/import-erp", { method: "POST" });
+      const payload = (await response.json()) as { total?: number; added?: number; updated?: number; error?: string };
+      if (!response.ok) throw new Error(payload.error || "Could not import from ERP");
+      setSyncNotice(
+        `Read ${payload.total ?? 0} lead(s) from ERP: ${payload.added ?? 0} added to the CRM, ${payload.updated ?? 0} already here got missing details filled.`,
+      );
+      await fetchData();
+    } catch (importError) {
+      setError(importError instanceof Error ? importError.message : "Could not import from ERP");
+    } finally {
+      setImportingErp(false);
     }
   }
 
@@ -245,7 +340,7 @@ export default function LeadsView() {
                     : "Send a real AI-drafted email to this lead"
                   : missing
               }
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition-colors ${
+              className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition-colors ${
                 isThis && current.state === "sent"
                   ? "border-green/30 bg-green-soft text-green"
                   : isThis && current.state === "error"
@@ -294,12 +389,14 @@ export default function LeadsView() {
           </div>
         )}
 
-        <section className="overflow-hidden rounded-[20px] border border-line bg-white shadow-panel">
+        <section ref={tableTop} className="overflow-hidden rounded-[20px] border border-line bg-white shadow-panel">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-[26px] py-6">
             <div>
-              <h2 className="m-0 mb-1 text-[17px] tracking-[-0.02em]">Lead results</h2>
+              <h2 className="m-0 mb-1 text-[17px] tracking-[-0.02em]">All saved leads</h2>
               <p className="m-0 text-[12px] text-muted">
-                {visibleLeads.length} of {leads.length} leads
+                {total === allTotal
+                  ? `${allTotal.toLocaleString()} lead${allTotal === 1 ? "" : "s"}`
+                  : `${total.toLocaleString()} of ${allTotal.toLocaleString()} leads match`}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2.5">
@@ -316,7 +413,10 @@ export default function LeadsView() {
                   <button
                     key={option.key}
                     type="button"
-                    onClick={() => setChannelFilter(option.key)}
+                    onClick={() => {
+                      setChannelFilter(option.key);
+                      setPage(1);
+                    }}
                     className={`rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
                       channelFilter === option.key ? "bg-indigo-soft text-indigo" : "text-muted hover:text-ink"
                     }`}
@@ -328,7 +428,10 @@ export default function LeadsView() {
               {storeTypeOptions.length > 0 && (
                 <select
                   value={storeTypeFilter}
-                  onChange={(event) => setStoreTypeFilter(event.target.value)}
+                  onChange={(event) => {
+                    setStoreTypeFilter(event.target.value);
+                    setPage(1);
+                  }}
                   aria-label="Filter by store type"
                   className="h-[43px] rounded-[11px] border border-[#dcdbe5] bg-white px-3 text-[12px] font-semibold text-[#3f3d4d] outline-none focus:border-indigo"
                 >
@@ -372,8 +475,24 @@ export default function LeadsView() {
               {erpnext?.connected && (
                 <button
                   type="button"
+                  onClick={() => void importFromErp()}
+                  disabled={importingErp}
+                  title={`Copy every Lead from ${erpnext.url} into this CRM. Nothing in ERP changes.`}
+                  className="inline-flex h-[43px] items-center justify-center gap-2 whitespace-nowrap rounded-[11px] border border-[#dcdbe5] bg-white px-4 text-[12px] font-bold text-[#3f3d4d] hover:enabled:border-indigo hover:enabled:text-indigo"
+                >
+                  {importingErp ? (
+                    <span className="size-3.5 animate-spin-fast rounded-full border-2 border-indigo/25 border-t-indigo" />
+                  ) : (
+                    <DownloadIcon />
+                  )}
+                  {importingErp ? "Importing…" : "Import from ERP"}
+                </button>
+              )}
+              {erpnext?.connected && (
+                <button
+                  type="button"
                   onClick={() => void syncToErpNext()}
-                  disabled={syncingErp || !leads.length}
+                  disabled={syncingErp || !allTotal}
                   title={`Create every lead that isn't in ${erpnext.url} yet`}
                   className="inline-flex h-[43px] items-center justify-center gap-2 whitespace-nowrap rounded-[11px] border border-[#dcdbe5] bg-white px-4 text-[12px] font-bold text-[#3f3d4d] hover:enabled:border-indigo hover:enabled:text-indigo"
                 >
@@ -389,7 +508,8 @@ export default function LeadsView() {
                 type="button"
                 onClick={() => void callAllLeads()}
                 data-tour="call-all"
-                disabled={sendingAll || !leads.some((lead) => lead.phone)}
+                disabled={sendingAll || !latestLeads.some((lead) => lead.phone)}
+                title="Calls the leads from your latest search and the ones added by hand, not every saved lead"
                 className="inline-flex h-[43px] items-center justify-center gap-2 whitespace-nowrap rounded-[11px] border border-indigo bg-indigo px-4 text-[12px] font-bold text-white shadow-button transition-transform hover:enabled:-translate-y-px hover:enabled:bg-indigo-dark"
               >
                 {sendingAll ? (
@@ -397,72 +517,206 @@ export default function LeadsView() {
                 ) : (
                   <PhoneIcon />
                 )}
-                {sendingAll ? "Calling…" : "Call all leads"}
+                {sendingAll ? "Calling…" : "Call latest leads"}
               </button>
             </div>
           </div>
 
-          <div className="flex flex-col gap-3 p-4">
-            {visibleLeads.map((lead, index) => {
-              const leadKey = leadKeyForClient(lead);
-              const entries = conversationsByLead.get(leadKey) ?? [];
-              const status = STATUS_META[deriveLeadStatus(entries)];
-              const source = deriveLeadSource(lead);
-              return (
-                <div
-                  key={`${lead.website}-${lead.email}-${index}`}
-                  onClick={() => setSelectedLeadKey(leadKey)}
-                  data-tour={index === 0 ? "lead-row" : undefined}
-                  className="flex cursor-pointer flex-col gap-3 rounded-2xl border border-[#f0eff4] bg-[#fbfbfd] p-4 transition-colors hover:border-[#dedaf9] lg:flex-row lg:items-center lg:justify-between lg:gap-4"
-                >
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span className="grid size-10 flex-none place-items-center rounded-full bg-indigo-soft text-[13px] font-extrabold text-indigo">
-                      {(lead.business_name || "?").charAt(0).toUpperCase()}
-                    </span>
-                    <div className="min-w-0">
-                      <strong className="block truncate text-[13px] text-ink">{lead.business_name || "Not found"}</strong>
-                      <span className="block truncate text-[11px] text-muted">
-                        {lead.contact_name || "No contact name"}
-                        {lead.city ? ` · ${lead.city}` : ""}
-                      </span>
-                    </div>
-                  </div>
+          {leads.length > 0 && (
+            <div
+              className={`overflow-x-auto transition-opacity ${loadedQuery === queryString ? "" : "opacity-50"}`}
+              aria-busy={loadedQuery !== queryString}
+            >
+              <table className="w-full min-w-[1040px] table-fixed border-collapse text-left">
+                <colgroup>
+                  <col />
+                  <col className="w-[165px]" />
+                  <col className="w-[142px]" />
+                  <col className="w-[116px]" />
+                  <col className="w-[96px]" />
+                  <col className="w-[352px]" />
+                </colgroup>
+                <thead>
+                  <tr className="border-b border-line bg-[#fbfbfd] text-[10px] font-extrabold uppercase tracking-[0.09em] text-[#8a879a]">
+                    <th scope="col" className="py-3 pr-3 pl-[26px] font-extrabold">Lead</th>
+                    <th scope="col" className="p-3 font-extrabold">Contact</th>
+                    <th scope="col" className="p-3 font-extrabold">Store type</th>
+                    <th scope="col" className="p-3 font-extrabold">Status</th>
+                    <th scope="col" className="p-3 font-extrabold">Added</th>
+                    <th scope="col" className="py-3 pr-[26px] pl-3 text-right font-extrabold">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {leads.map((lead, index) => {
+                    const leadKey = leadKeyForClient(lead);
+                    const entries = conversationsByLead.get(leadKey) ?? [];
+                    const status = STATUS_META[deriveLeadStatus(entries)];
+                    return (
+                      <tr
+                        key={lead.id}
+                        onClick={() => setSelectedLead(lead)}
+                        data-tour={index === 0 ? "lead-row" : undefined}
+                        className="cursor-pointer border-b border-[#f0eff4] align-middle transition-colors last:border-b-0 hover:bg-[#fbfbfd]"
+                      >
+                        <td className="py-3 pr-3 pl-[26px]">
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedLead(lead);
+                            }}
+                            title={lead.business_name}
+                            className="block w-full truncate border-0 bg-transparent p-0 text-left text-[13px] font-bold text-ink hover:text-indigo"
+                          >
+                            {lead.business_name || "Not found"}
+                          </button>
+                          <span className="block truncate text-[11px] text-muted">
+                            {[lead.contact_name, lead.city].filter(Boolean).join(" · ") || "No contact name"}
+                          </span>
+                        </td>
+                        <td className="p-3 text-[11px]" onClick={(event) => event.stopPropagation()}>
+                          {lead.phone ? (
+                            <a href={`tel:${lead.phone}`} className="block truncate text-[#454254] tabular-nums no-underline hover:text-indigo">
+                              {lead.phone}
+                            </a>
+                          ) : (
+                            <span className="block italic text-[#a3a1b0]">No phone</span>
+                          )}
+                          {lead.email ? (
+                            <a href={`mailto:${lead.email}`} title={lead.email} className="block truncate text-muted no-underline hover:text-indigo">
+                              {lead.email}
+                            </a>
+                          ) : (
+                            <span className="block italic text-[#a3a1b0]">No email</span>
+                          )}
+                        </td>
+                        <td className="p-3">
+                          {lead.store_type ? (
+                            <span
+                              title={lead.store_type}
+                              className="inline-block max-w-full truncate rounded-full bg-indigo-soft px-2.5 py-1 align-middle text-[10px] font-bold text-indigo"
+                            >
+                              {lead.store_type}
+                            </span>
+                          ) : (
+                            <span className="text-[11px] text-[#b9b7c0]">None</span>
+                          )}
+                        </td>
+                        <td className="p-3">
+                          <div className="flex flex-col items-start gap-1">
+                            <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold ${status.className}`}>{status.label}</span>
+                            <ChannelStatus entries={entries} />
+                          </div>
+                        </td>
+                        <td className="p-3 text-[11px]">
+                          <span className="block truncate text-[#454254] tabular-nums">{formatDate(lead.savedAt)}</span>
+                          <span className="block truncate text-muted">{ORIGIN_LABELS[lead.origin]}</span>
+                        </td>
+                        <td className="py-3 pr-[26px] pl-3" onClick={(event) => event.stopPropagation()}>
+                          <div className="flex flex-wrap items-center justify-end gap-1.5" data-tour={index === 0 ? "lead-actions" : undefined}>
+                            <OutreachButtons lead={lead} leadKey={leadKey} />
+                            {erpnext?.connected && <SendToErpButton lead={lead} size="row" />}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedLead(lead)}
+                              title={lead.latestNote || "Add a note to this lead"}
+                              className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition-colors ${
+                                lead.noteCount
+                                  ? "border-indigo/25 bg-indigo-soft text-indigo"
+                                  : "border-[#dcdbe5] bg-white text-[#3f3d4d] hover:border-indigo hover:text-indigo"
+                              }`}
+                            >
+                              <NoteIcon />
+                              {lead.noteCount ? `Notes (${lead.noteCount})` : "Notes"}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
 
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {lead.store_type && (
-                      <span className="rounded-full bg-indigo-soft px-2.5 py-1 text-[10px] font-bold text-indigo">
-                        {lead.store_type}
-                      </span>
-                    )}
-                    <span className="inline-flex items-center gap-1 rounded-full bg-[#f1f0f5] px-2.5 py-1 text-[10px] font-bold text-[#696777]">
-                      {source.icon}
-                      {source.label}
-                    </span>
-                    <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${status.className}`}>
-                      {status.label}
-                    </span>
-                    <ChannelStatus entries={entries} />
-                  </div>
-
-                  <div
-                    className="flex flex-none items-center gap-2 text-muted"
-                    data-tour={index === 0 ? "lead-actions" : undefined}
-                    onClick={(event) => event.stopPropagation()}
+          {leads.length > 0 && (
+            <nav
+              aria-label="Lead pages"
+              className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-[26px] py-4"
+            >
+              <div className="flex flex-wrap items-center gap-4 text-[12px] text-muted">
+                <span className="tabular-nums">
+                  Showing {firstRow.toLocaleString()}–{lastRow.toLocaleString()} of {total.toLocaleString()}
+                </span>
+                <label className="flex items-center gap-2">
+                  Rows per page
+                  <select
+                    value={pageSize}
+                    onChange={(event) => {
+                      setPageSize(Number(event.target.value));
+                      setPage(1);
+                    }}
+                    className="h-[33px] rounded-[9px] border border-[#d8d6e2] bg-white px-2 text-[12px] font-semibold text-[#3f3d4d] outline-none focus:border-indigo"
                   >
-                    <OutreachButtons lead={lead} leadKey={leadKey} />
-                    {erpnext?.connected && <SendToErpButton lead={lead} size="row" />}
+                    {PAGE_SIZES.map((size) => (
+                      <option key={size} value={size}>
+                        {size}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  aria-label="Previous page"
+                  onClick={() => goToPage(page - 1)}
+                  disabled={page <= 1}
+                  className="grid size-[33px] place-items-center rounded-[9px] border border-[#dcdbe5] bg-white text-[#3f3d4d] hover:enabled:border-indigo hover:enabled:text-indigo"
+                >
+                  <span className="grid rotate-180">
                     <ChevronRightIcon />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                  </span>
+                </button>
+                {pageButtons(page, pageCount).map((value, index) =>
+                  value === "gap" ? (
+                    <span key={`gap-${index}`} className="px-1 text-[12px] text-muted">
+                      …
+                    </span>
+                  ) : (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => goToPage(value)}
+                      aria-current={value === page ? "page" : undefined}
+                      className={`h-[33px] min-w-[33px] rounded-[9px] border px-2 text-[12px] font-bold tabular-nums transition-colors ${
+                        value === page
+                          ? "border-indigo bg-indigo text-white"
+                          : "border-[#dcdbe5] bg-white text-[#3f3d4d] hover:border-indigo hover:text-indigo"
+                      }`}
+                    >
+                      {value.toLocaleString()}
+                    </button>
+                  ),
+                )}
+                <button
+                  type="button"
+                  aria-label="Next page"
+                  onClick={() => goToPage(page + 1)}
+                  disabled={page >= pageCount}
+                  className="grid size-[33px] place-items-center rounded-[9px] border border-[#dcdbe5] bg-white text-[#3f3d4d] hover:enabled:border-indigo hover:enabled:text-indigo"
+                >
+                  <ChevronRightIcon />
+                </button>
+              </div>
+            </nav>
+          )}
 
-          {!loading && !visibleLeads.length && (
+          {!loading && !leads.length && (
             <div className="flex min-h-[280px] flex-col items-center justify-center p-9 text-center">
-              <h3 className="m-0 mb-1.5 text-[15px]">{leads.length ? "No leads match this filter" : "No leads yet"}</h3>
+              <h3 className="m-0 mb-1.5 text-[15px]">{allTotal ? "No leads match this filter" : "No leads yet"}</h3>
               <p className="m-0 text-[12px] text-muted">
-                {leads.length ? "Try a different search or channel filter." : "Run a scrape from the Workflow page to get started."}
+                {allTotal ? "Try a different search or channel filter." : "Run a search on the Discovery page to get started."}
               </p>
             </div>
           )}
@@ -485,13 +739,14 @@ export default function LeadsView() {
         </div>
       </div>
 
-      {selectedLead && selectedLeadKey && (
+      {openLead && (
         <ConversationThread
-          lead={selectedLead}
+          lead={openLead}
           entries={selectedEntries}
-          onClose={() => setSelectedLeadKey(null)}
-          onSend={(channel) => void sendToOutreach(selectedLeadKey, channel)}
+          onClose={() => setSelectedLead(null)}
+          onSend={selectedLeadKey ? (channel) => void sendToOutreach(selectedLeadKey, channel) : undefined}
           sendState={sendStates[selectedLeadKey]}
+          notes={<LeadNotes key={openLead.id} leadId={openLead.id} onChanged={() => void fetchData()} />}
         />
       )}
 

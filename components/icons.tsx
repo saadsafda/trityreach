@@ -207,6 +207,21 @@ export function HelpIcon() {
   );
 }
 
+export function NoteIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14">
+      <path
+        d="M6 3h9l4 4v14H6V3Zm9 0v4h4M9 12h7M9 16h5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function MapPinIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14">

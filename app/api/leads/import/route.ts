@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { emailKey, existingMatch, fetchExistingIndex, phoneKey, readErpConfig, rememberLead } from "@/lib/erpnext";
 import { validateLead } from "@/lib/lead-input";
-import { appendActivityEvent, appendManualLeads, ensureDataDirectory, readLeads } from "@/lib/storage";
+import { appendActivityEvent, appendManualLeads, ensureDataDirectory, readSavedLeads } from "@/lib/storage";
 import type { ImportSummary, Lead } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -21,7 +21,7 @@ export async function POST(request: Request) {
     // same store written "(732) 555-0191" and "732-555-0191" is one lead.
     const crmEmails = new Set<string>();
     const crmPhones = new Set<string>();
-    for (const lead of await readLeads()) {
+    for (const lead of await readSavedLeads()) {
       if (emailKey(lead.email)) crmEmails.add(emailKey(lead.email));
       if (phoneKey(lead.phone)) crmPhones.add(phoneKey(lead.phone));
     }

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { leadKeyForClient } from "@/lib/lead-key";
-import { appendActivityEvent, ensureDataDirectory, readLeads } from "@/lib/storage";
-import type { Lead } from "@/lib/types";
+import { appendActivityEvent, ensureDataDirectory, readLeads, readSavedLeads } from "@/lib/storage";
+import { LEAD_FIELDS, type Lead } from "@/lib/types";
 
 export const runtime = "nodejs";
 
@@ -19,7 +19,8 @@ async function deliverLead(webhookUrl: string, lead: Lead, channel: OutreachChan
   const response = await fetch(webhookUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...lead, channel }),
+    // Only the lead's own fields: a saved lead also carries its private notes.
+    body: JSON.stringify({ ...Object.fromEntries(LEAD_FIELDS.map((field) => [field, lead[field]])), channel }),
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) throw new Error(`The outreach webhook responded with ${response.status}`);
@@ -45,10 +46,11 @@ export async function POST(request: Request) {
       );
     }
 
-    const leads = await readLeads();
-
     let targets: Lead[];
     if (body.all === true) {
+      // Only the working set (latest run, hand-added, waiting for ERP), never
+      // the CRM's whole history: these are real calls.
+      const leads = await readLeads();
       targets = leads.filter((lead) => leadKeyForClient(lead) && supportsChannel(lead, channel));
       if (!targets.length) {
         return NextResponse.json(
@@ -58,7 +60,8 @@ export async function POST(request: Request) {
       }
     } else if (typeof body.leadKey === "string" && body.leadKey.trim()) {
       const key = body.leadKey.trim().toLowerCase();
-      targets = leads.filter((lead) => leadKeyForClient(lead) === key);
+      const match = (await readSavedLeads()).find((lead) => leadKeyForClient(lead) === key);
+      targets = match ? [match] : [];
       if (!targets.length) {
         return NextResponse.json({ error: "No saved lead matches that email/phone." }, { status: 404 });
       }
